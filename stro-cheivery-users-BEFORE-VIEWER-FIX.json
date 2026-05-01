@@ -1,0 +1,62 @@
+[
+  {
+    "username": "admin",
+    "displayName": "Admin",
+    "passwordHash": "$2b$10$5LyIPtADvmFlpKLWE5CGY.M.9E9MvVvDtubccFJz0X/o6C7cBXNL6",
+    "globalRole": "superadmin",
+    "isActive": true,
+    "createdAt": "2026-04-19T11:48:42.046Z",
+    "id": "admin",
+    "email": "admin@agv.local",
+    "password": "ElizabethT96#",
+    "role": "superadmin"
+  },
+  {
+    "username": "beenice19",
+    "displayName": "bee",
+    "passwordHash": "$2b$10$2dVlVsyu8ujthRCYX34UxuDwEygUfTkyo6x5XIjEyowIfZEVkDIrC",
+    "globalRole": "user",
+    "isActive": true,
+    "createdAt": "2026-04-19T20:52:42.612Z",
+    "id": "user-1777337009665",
+    "email": "",
+    "password": "viewer123",
+    "role": "viewer"
+  },
+  {
+    "username": "byron",
+    "displayName": "guest",
+    "passwordHash": "$2b$10$B7NiuGt8QD7MqrfcjTjf9Ouy/to4SMY.X5NrFTDAmL5DPkwX79Xn.",
+    "globalRole": "user",
+    "isActive": true,
+    "createdAt": "2026-04-26T14:13:50.969Z",
+    "id": "user-1777337009665",
+    "email": "",
+    "password": "viewer123",
+    "role": "viewer"
+  },
+  {
+    "username": "byronavant@gmail.com",
+    "displayName": "Bee2",
+    "passwordHash": "$2b$10$OLUpOWp4mNZ7g9oMP4mnmeFrz7igUhOeI2oBAHrTuPXGX8rwAqZQ2",
+    "globalRole": "superadmin",
+    "isActive": true,
+    "createdAt": "2026-04-26T22:38:38.350Z",
+    "id": "user-1777337009665",
+    "email": "",
+    "password": "viewer123",
+    "role": "viewer"
+  },
+  {
+    "username": "testguy",
+    "displayName": "testguy",
+    "passwordHash": "$2b$10$f8EgUAvkjSO/z.0SOyM5YelV1PrTWMvKsDUBWH.k1Ngj9FHOsSttq",
+    "globalRole": "user",
+    "isActive": true,
+    "createdAt": "2026-04-27T18:34:10.854Z",
+    "id": "user-1777337009665",
+    "email": "",
+    "password": "viewer123",
+    "role": "viewer"
+  }
+]

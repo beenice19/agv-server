@@ -1,0 +1,79 @@
+[
+  {
+    "id": 1,
+    "name": "Main Sanctuary",
+    "type": "Featured",
+    "status": "live",
+    "hostName": "Host User",
+    "scheduledTime": "Sunday 10:00 AM",
+    "visibility": "public"
+  },
+  {
+    "id": 2,
+    "name": "Leadership Hall",
+    "type": "Featured",
+    "status": "ready",
+    "hostName": "Leadership Team",
+    "scheduledTime": "Wednesday 6:30 PM",
+    "visibility": "private"
+  },
+  {
+    "id": 3,
+    "name": "Prayer Room",
+    "type": "Featured",
+    "status": "ready",
+    "hostName": "Prayer Team",
+    "scheduledTime": "Daily 7:00 AM",
+    "visibility": "public"
+  },
+  {
+    "id": 4,
+    "name": "Youth Arena",
+    "type": "Featured",
+    "status": "offline",
+    "hostName": "Youth Team",
+    "scheduledTime": "Friday 7:00 PM",
+    "visibility": "public"
+  },
+  {
+    "id": 5,
+    "name": "Choir Suite",
+    "type": "Featured",
+    "status": "ready",
+    "hostName": "Music Team",
+    "scheduledTime": "Thursday 7:30 PM",
+    "visibility": "public"
+  },
+  {
+    "id": 6,
+    "name": "Leadership Hall",
+    "type": "Featured",
+    "status": "ready",
+    "hostName": "Leadership Team",
+    "scheduledTime": "Wednesday 6:30 PM",
+    "visibility": "private"
+  },
+  {
+    "id": 7,
+    "name": "Bee & Dee",
+    "type": "Standard",
+    "status": "ready",
+    "hostName": "Byron Avant",
+    "scheduledTime": "8am to 9am Monday-Friday",
+    "visibility": "public"
+  },
+  {
+    "id": 8,
+    "name": "The Presidents Board Meeting",
+    "type": "Standard",
+    "status": "live",
+    "hostName": "Byron Avant",
+    "scheduledTime": "10AM",
+    "visibility": "private"
+  },
+  {
+    "id": 9,
+    "name": "The Boom Boom Room",
+    "meta": "Party house."
+  }
+]

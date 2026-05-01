@@ -1,0 +1,6 @@
+node_modules
+.env
+stro-cheivery-users.json
+stro-cheivery-data.json
+stage-uploads
+*.log

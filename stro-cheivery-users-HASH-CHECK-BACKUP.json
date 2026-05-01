@@ -1,0 +1,10 @@
+[
+  {
+    "username": "admin",
+    "displayName": "Admin",
+    "passwordHash": "$2b$10$dQXl2D0ftyPR4RslQypZdOdy9NeOqh3fRmbUojVFrjzoQHrH42uUW",
+    "globalRole": "superadmin",
+    "isActive": true,
+    "createdAt": "2026-04-19T04:38:20.126Z"
+  }
+]

@@ -1,0 +1,168 @@
+{
+  "rooms": [
+    {
+      "id": "main-hall",
+      "name": "Main Hall",
+      "category": "Convention",
+      "isPrivate": false,
+      "isLocked": false,
+      "assignedHost": "Joe",
+      "moderators": [
+        "Admin",
+        "Wayne"
+      ]
+    },
+    {
+      "id": "studio-a",
+      "name": "Studio A",
+      "category": "Media",
+      "isPrivate": false,
+      "isLocked": false,
+      "assignedHost": "Admin",
+      "moderators": []
+    },
+    {
+      "id": "radio-room",
+      "name": "Radio Room",
+      "category": "Broadcast",
+      "isPrivate": false,
+      "isLocked": false,
+      "assignedHost": "Admin",
+      "moderators": []
+    },
+    {
+      "id": "prayer-room",
+      "name": "Prayer Room",
+      "category": "Community",
+      "isPrivate": true,
+      "isLocked": false,
+      "assignedHost": "Admin",
+      "moderators": []
+    },
+    {
+      "id": "classroom-1",
+      "name": "Classroom 1",
+      "category": "Teaching",
+      "isPrivate": false,
+      "isLocked": false,
+      "assignedHost": "Admin",
+      "moderators": []
+    },
+    {
+      "id": "green-room",
+      "name": "Green Room",
+      "category": "Backstage",
+      "isPrivate": true,
+      "isLocked": false,
+      "assignedHost": "Admin",
+      "moderators": []
+    }
+  ],
+  "roomState": {
+    "main-hall": {
+      "messages": [
+        {
+          "id": 1,
+          "sender": "System",
+          "text": "Welcome to Stro Cheivery.",
+          "time": "1:22 PM"
+        },
+        {
+          "id": 2,
+          "sender": "Admin",
+          "text": "Main stage is ready.",
+          "time": "1:22 PM"
+        },
+        {
+          "id": 1776018934500,
+          "sender": "Admin",
+          "text": "Hey Joe",
+          "time": "1:35 PM"
+        },
+        {
+          "id": 1776018978225,
+          "sender": "Admin",
+          "text": "Hey Wayne",
+          "time": "1:36 PM"
+        }
+      ],
+      "bulletins": [
+        "Welcome to Stro Cheivery.",
+        "Convention bulletin board is active.",
+        "Upload a text file to scroll announcements."
+      ],
+      "bulletinSource": "manual"
+    },
+    "studio-a": {
+      "messages": [
+        {
+          "id": 1776018133235,
+          "sender": "System",
+          "text": "Studio A is ready.",
+          "time": "1:22 PM"
+        }
+      ],
+      "bulletins": [
+        "Welcome to Studio A."
+      ],
+      "bulletinSource": "manual"
+    },
+    "radio-room": {
+      "messages": [
+        {
+          "id": 1776018133236,
+          "sender": "System",
+          "text": "Radio Room is ready.",
+          "time": "1:22 PM"
+        }
+      ],
+      "bulletins": [
+        "Welcome to Radio Room."
+      ],
+      "bulletinSource": "manual"
+    },
+    "prayer-room": {
+      "messages": [
+        {
+          "id": 1776018133236,
+          "sender": "System",
+          "text": "Prayer Room is ready.",
+          "time": "1:22 PM"
+        }
+      ],
+      "bulletins": [
+        "Welcome to Prayer Room."
+      ],
+      "bulletinSource": "manual"
+    },
+    "classroom-1": {
+      "messages": [
+        {
+          "id": 1776018133237,
+          "sender": "System",
+          "text": "Classroom 1 is ready.",
+          "time": "1:22 PM"
+        }
+      ],
+      "bulletins": [
+        "Welcome to Classroom 1."
+      ],
+      "bulletinSource": "manual"
+    },
+    "green-room": {
+      "messages": [
+        {
+          "id": 1776018133238,
+          "sender": "System",
+          "text": "Green Room is ready.",
+          "time": "1:22 PM"
+        }
+      ],
+      "bulletins": [
+        "Welcome to Green Room."
+      ],
+      "bulletinSource": "manual"
+    }
+  },
+  "savedAt": "2026-04-12T18:36:18.227Z"
+}
