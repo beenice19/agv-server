@@ -8,31 +8,21 @@ const jwt = require("jsonwebtoken");
 const { Server } = require("socket.io");
 
 const app = express();
-
+const PORT = process.env.PORT || 8787;
 
 const corsOptions = {
-  origin: [
-    "https://agv-client.vercel.app",
-    "https://agv-client-git-main-beenice19s-projects.vercel.app",
-    "http://127.0.0.1:5175",
-    "http://localhost:5175",
-  ],
+  origin: "*",
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
 };
 
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
-const PORT = process.env.PORT || 8787;
-
-app.use(cors({
-  origin: "*", // we will tighten this after deployment
-  methods: ["GET", "POST"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-}));
 app.use(express.json({ limit: "8mb" }));
 
 const server = http.createServer(app);
+
+
 
 const io = new Server(server, {
   cors: {
