@@ -1309,7 +1309,7 @@ app.post("/api/presence/disconnect", (req, res) => {
 
 app.post("/api/livekit/token", requireAuth, async (req, res) => {
   try {
-    const { roomName, identity, name } = req.body || {};
+    const { roomName, identity, name, role } = req.body || {};
 
     if (!roomName || !identity) {
       return res.status(400).json({
@@ -1317,28 +1317,6 @@ app.post("/api/livekit/token", requireAuth, async (req, res) => {
         error: "roomName and identity required",
       });
     }
-
-    const room = findRoom(cleanName(roomName));
-
-    if (!room) {
-      return res.status(404).json({
-        ok: false,
-        error: "Room not found",
-      });
-    }
-
-    if (!canEnterRoom(room, req.authUser)) {
-      return res.status(403).json({
-        ok: false,
-        error: "Room is locked",
-      });
-    }
-
-    const resolvedRole = getRole(room, req.authUser);
-    const canPublishToLiveKit =
-      resolvedRole === "superadmin" ||
-      resolvedRole === "host" ||
-      resolvedRole === "moderator";
 
     const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
     const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
@@ -1353,22 +1331,20 @@ app.post("/api/livekit/token", requireAuth, async (req, res) => {
 
     const { AccessToken } = require("livekit-server-sdk");
 
-    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
-      identity: cleanName(identity) || req.authUser.username,
-      name: cleanName(name) || req.authUser.displayName,
-      metadata: JSON.stringify({
-        role: resolvedRole,
-        displayName: req.authUser.displayName,
-        roomId: room.id,
-      }),
-    });
+    const at = new AccessToken(
+      LIVEKIT_API_KEY,
+      LIVEKIT_API_SECRET,
+      {
+        identity,
+        name: name || identity,
+      }
+    );
 
     at.addGrant({
-      room: room.id,
+      room: roomName,
       roomJoin: true,
-      canPublish: canPublishToLiveKit,
+      canPublish: role !== "viewer",
       canSubscribe: true,
-      canPublishData: true,
     });
 
     const token = await at.toJwt();
@@ -1377,9 +1353,6 @@ app.post("/api/livekit/token", requireAuth, async (req, res) => {
       ok: true,
       participant_token: token,
       server_url: LIVEKIT_URL,
-      roomName: room.id,
-      role: resolvedRole,
-      canPublish: canPublishToLiveKit,
     });
   } catch (error) {
     console.error("LIVEKIT TOKEN ERROR:", error);
@@ -1388,7 +1361,8 @@ app.post("/api/livekit/token", requireAuth, async (req, res) => {
       error: "LiveKit token failed",
     });
   }
-});io.use((socket, next) => {
+});
+io.use((socket, next) => {
   try {
     const token = cleanName(socket.handshake.auth?.token);
 
