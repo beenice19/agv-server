@@ -1,0 +1,14 @@
+{
+  "tickets": [
+    {
+      "code": "AGV-F2BG5J",
+      "buyerName": "Test Guest",
+      "buyerEmail": "test@example.com",
+      "eventName": "AGV Demo Event",
+      "roomId": "main-hall",
+      "used": true,
+      "createdAt": "2026-05-03T20:20:22.717Z",
+      "usedAt": "2026-05-03T20:58:47.459Z"
+    }
+  ]
+}

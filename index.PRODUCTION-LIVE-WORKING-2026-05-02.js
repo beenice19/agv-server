@@ -8,12 +8,32 @@ const jwt = require("jsonwebtoken");
 const { Server } = require("socket.io");
 
 const app = express();
-const PORT = 8787;
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
-app.use(cors());
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+const PORT = process.env.PORT || 8787;
+
+const corsOptions = {
+  origin: "*",
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "8mb" }));
 
 const server = http.createServer(app);
+
+
 
 const io = new Server(server, {
   cors: {
@@ -1301,8 +1321,90 @@ app.post("/api/presence/disconnect", (req, res) => {
 
   return res.json({ ok: true });
 });
+// 🔥 LIVEKIT TOKEN ENDPOINT (MERGED INTO MAIN SERVER)
 
-io.use((socket, next) => {
+app.post("/api/livekit/token", requireAuth, async (req, res) => {
+  try {
+    const { roomName, identity, name } = req.body || {};
+
+    if (!roomName || !identity) {
+      return res.status(400).json({
+        ok: false,
+        error: "roomName and identity required",
+      });
+    }
+
+    const room = findRoom(cleanName(roomName));
+
+    if (!room) {
+      return res.status(404).json({
+        ok: false,
+        error: "Room not found",
+      });
+    }
+
+    if (!canEnterRoom(room, req.authUser)) {
+      return res.status(403).json({
+        ok: false,
+        error: "Room is locked",
+      });
+    }
+
+    const resolvedRole = getRole(room, req.authUser);
+    const canPublishToLiveKit =
+      resolvedRole === "superadmin" ||
+      resolvedRole === "host" ||
+      resolvedRole === "moderator";
+
+    const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
+    const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
+    const LIVEKIT_URL = process.env.LIVEKIT_URL;
+
+    if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET || !LIVEKIT_URL) {
+      return res.status(500).json({
+        ok: false,
+        error: "LiveKit env not configured",
+      });
+    }
+
+    const { AccessToken } = require("livekit-server-sdk");
+
+    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+      identity: cleanName(identity) || req.authUser.username,
+      name: cleanName(name) || req.authUser.displayName,
+      metadata: JSON.stringify({
+        role: resolvedRole,
+        displayName: req.authUser.displayName,
+        roomId: room.id,
+      }),
+    });
+
+    at.addGrant({
+      room: room.id,
+      roomJoin: true,
+      canPublish: canPublishToLiveKit,
+      canSubscribe: true,
+      canPublishData: true,
+    });
+
+    const token = await at.toJwt();
+
+    return res.json({
+      ok: true,
+      participant_token: token,
+      server_url: LIVEKIT_URL,
+      roomName: room.id,
+      role: resolvedRole,
+      canPublish: canPublishToLiveKit,
+    });
+  } catch (error) {
+    console.error("LIVEKIT TOKEN ERROR:", error);
+    return res.status(500).json({
+      ok: false,
+      error: "LiveKit token failed",
+    });
+  }
+});io.use((socket, next) => {
   try {
     const token = cleanName(socket.handshake.auth?.token);
 
