@@ -591,81 +591,122 @@ app.get("/api/health", (req, res) => {
 });
 
 
-// PASS33C_LIVEKIT_ROUTE_CORRECT_REPO
+
+// PASS34A_CLEAN_LIVEKIT_SERVER_REBUILD
+function agvCleanText(value, fallback = "") {
+  return String(value ?? fallback).trim();
+}
+
+function agvSafeIdentity(value, fallback = "agv-user") {
+  const raw = agvCleanText(value, fallback).toLowerCase();
+
+  const safe = raw
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+
+  return safe || fallback;
+}
+
+function agvLiveKitEnvStatus() {
+  const livekitUrl = agvCleanText(process.env.LIVEKIT_URL);
+  const apiKey = agvCleanText(process.env.LIVEKIT_API_KEY);
+  const apiSecret = agvCleanText(process.env.LIVEKIT_API_SECRET);
+
+  return {
+    livekitUrl,
+    apiKey,
+    apiSecret,
+    livekitConfigured: Boolean(livekitUrl && apiKey && apiSecret),
+    livekitUrlConfigured: Boolean(livekitUrl),
+    apiKeyConfigured: Boolean(apiKey),
+    apiSecretConfigured: Boolean(apiSecret),
+    livekitUrlHost: livekitUrl.replace(/^wss?:\/\//i, "").replace(/\/.*$/, ""),
+    apiKeyPrefix: apiKey ? apiKey.slice(0, 8) : "",
+  };
+}
+
 app.get("/api/livekit/health", (req, res) => {
-  const livekitConfigured = Boolean(
-    process.env.LIVEKIT_URL &&
-      process.env.LIVEKIT_API_KEY &&
-      process.env.LIVEKIT_API_SECRET
-  );
+  const env = agvLiveKitEnvStatus();
 
   return res.json({
     ok: true,
-    service: "AGV LiveKit Token Endpoint",
-    livekitConfigured,
-    livekitUrlConfigured: Boolean(process.env.LIVEKIT_URL),
-    apiKeyConfigured: Boolean(process.env.LIVEKIT_API_KEY),
-    apiSecretConfigured: Boolean(process.env.LIVEKIT_API_SECRET),
+    service: "AGV Clean LiveKit Server",
+    pass: "PASS34A",
+    livekitConfigured: env.livekitConfigured,
+    livekitUrlConfigured: env.livekitUrlConfigured,
+    apiKeyConfigured: env.apiKeyConfigured,
+    apiSecretConfigured: env.apiSecretConfigured,
+    livekitUrlHost: env.livekitUrlHost,
+    apiKeyPrefix: env.apiKeyPrefix,
     timestamp: new Date().toISOString(),
   });
 });
 
-// PASS33D_PRIVATE_BETA_LIVEKIT_COMPAT
-// PRIVATE BETA NOTE:
-// This route intentionally allows the current AGV client to request LiveKit tokens
-// without a server JWT because the current client uses local AGV role/session state.
-// Before public launch, replace this with full server-authenticated session flow.
+app.get("/api/livekit/config-check", (req, res) => {
+  const env = agvLiveKitEnvStatus();
+
+  return res.json({
+    ok: true,
+    service: "AGV LiveKit Config Check",
+    pass: "PASS34A",
+    expected: {
+      livekitUrlFormat: "wss://your-project.livekit.cloud",
+      keyAndSecretMustMatchSameProject: true,
+    },
+    current: {
+      livekitConfigured: env.livekitConfigured,
+      livekitUrlHost: env.livekitUrlHost,
+      apiKeyPrefix: env.apiKeyPrefix,
+      apiKeyConfigured: env.apiKeyConfigured,
+      apiSecretConfigured: env.apiSecretConfigured,
+    },
+    warning:
+      "If websocket signal connection still fails while this route is ok, verify LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET all come from the same LiveKit Cloud project.",
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.post("/api/livekit/token", async (req, res) => {
   try {
-    const LIVEKIT_URL = process.env.LIVEKIT_URL;
-    const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
-    const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
+    const env = agvLiveKitEnvStatus();
 
-    if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+    if (!env.livekitConfigured) {
       return res.status(500).json({
         ok: false,
+        pass: "PASS34A",
         error: "LiveKit env not configured",
-        livekitUrlConfigured: Boolean(LIVEKIT_URL),
-        apiKeyConfigured: Boolean(LIVEKIT_API_KEY),
-        apiSecretConfigured: Boolean(LIVEKIT_API_SECRET),
+        livekitUrlConfigured: env.livekitUrlConfigured,
+        apiKeyConfigured: env.apiKeyConfigured,
+        apiSecretConfigured: env.apiSecretConfigured,
       });
     }
 
     const { AccessToken } = require("livekit-server-sdk");
 
-    const roomName =
-      cleanName(req.body?.roomName) ||
-      cleanName(req.body?.room) ||
-      cleanName(req.body?.roomId) ||
-      "main-hall";
+    const roomName = agvSafeIdentity(
+      req.body?.roomName || req.body?.room || req.body?.roomId,
+      "main-hall"
+    );
 
-    const requestedRole = cleanName(
-      req.body?.role || req.body?.participantRole || "viewer"
+    const requestedRole = agvCleanText(
+      req.body?.role || req.body?.participantRole || "viewer",
+      "viewer"
     ).toLowerCase();
 
-    const identityBase =
-      cleanName(req.body?.identity) ||
-      cleanName(req.body?.participantIdentity) ||
-      cleanName(req.authUser?.username) ||
-      cleanName(req.authUser?.displayName) ||
-      "agv-user";
+    const displayName = agvCleanText(
+      req.body?.name || req.body?.displayName || req.body?.identity,
+      requestedRole === "host" ? "AGV Host" : "AGV Viewer"
+    );
 
-    const displayName =
-      cleanName(req.body?.name) ||
-      cleanName(req.body?.displayName) ||
-      cleanName(req.authUser?.displayName) ||
-      identityBase;
+    const identityBase = agvSafeIdentity(
+      req.body?.identity || req.body?.participantIdentity || displayName,
+      requestedRole === "host" ? "agv-host" : "agv-viewer"
+    );
 
-    const identity =
-      identityBase
-        .toLowerCase()
-        .replace(/[^a-z0-9_-]+/g, "-")
-        .replace(/^-+|-+$/g, "") +
-      "-" +
-      Date.now();
+    const identity = identityBase + "-" + Date.now();
 
     const canPublish =
-      req.authUser?.globalRole === "superadmin" ||
       requestedRole === "host" ||
       requestedRole === "admin" ||
       requestedRole === "moderator" ||
@@ -673,18 +714,20 @@ app.post("/api/livekit/token", async (req, res) => {
       requestedRole === "super-admin" ||
       req.body?.canPublish === true;
 
-    const token = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+    const at = new AccessToken(env.apiKey, env.apiSecret, {
       identity,
       name: displayName,
+      ttl: "2h",
       metadata: JSON.stringify({
         agv: true,
+        pass: "PASS34A",
+        betaCompatibilityMode: true,
         role: requestedRole,
-        username: req.authUser?.username || "",
         displayName,
       }),
     });
 
-    token.addGrant({
+    at.addGrant({
       roomJoin: true,
       room: roomName,
       canSubscribe: true,
@@ -692,25 +735,31 @@ app.post("/api/livekit/token", async (req, res) => {
       canPublishData: true,
     });
 
-    const jwt = await token.toJwt();
+    const jwt = await at.toJwt();
 
     return res.json({
       ok: true,
+      pass: "PASS34A",
       betaCompatibilityMode: true,
       token: jwt,
       participant_token: jwt,
-      server_url: LIVEKIT_URL,
-      url: LIVEKIT_URL,
+      server_url: env.livekitUrl,
+      url: env.livekitUrl,
       roomName,
       identity,
       name: displayName,
+      role: requestedRole,
       canPublish,
+      livekitUrlHost: env.livekitUrlHost,
+      apiKeyPrefix: env.apiKeyPrefix,
+      issuedAt: new Date().toISOString(),
     });
   } catch (error) {
-    console.error("LIVEKIT TOKEN ERROR:", error);
+    console.error("PASS34A LIVEKIT TOKEN ERROR:", error);
 
     return res.status(500).json({
       ok: false,
+      pass: "PASS34A",
       error: "LiveKit token failed",
       message: error?.message || "Unknown LiveKit token error",
     });
