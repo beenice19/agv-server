@@ -610,7 +610,12 @@ app.get("/api/livekit/health", (req, res) => {
   });
 });
 
-app.post("/api/livekit/token", requireAuth, async (req, res) => {
+// PASS33D_PRIVATE_BETA_LIVEKIT_COMPAT
+// PRIVATE BETA NOTE:
+// This route intentionally allows the current AGV client to request LiveKit tokens
+// without a server JWT because the current client uses local AGV role/session state.
+// Before public launch, replace this with full server-authenticated session flow.
+app.post("/api/livekit/token", async (req, res) => {
   try {
     const LIVEKIT_URL = process.env.LIVEKIT_URL;
     const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
@@ -691,6 +696,7 @@ app.post("/api/livekit/token", requireAuth, async (req, res) => {
 
     return res.json({
       ok: true,
+      betaCompatibilityMode: true,
       token: jwt,
       participant_token: jwt,
       server_url: LIVEKIT_URL,
