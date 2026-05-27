@@ -1,3 +1,4 @@
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const http = require("http");
@@ -587,6 +588,127 @@ app.get("/api/health", (req, res) => {
     users: users.length,
     timestamp: new Date().toISOString(),
   });
+});
+
+
+// PASS33C_LIVEKIT_ROUTE_CORRECT_REPO
+app.get("/api/livekit/health", (req, res) => {
+  const livekitConfigured = Boolean(
+    process.env.LIVEKIT_URL &&
+      process.env.LIVEKIT_API_KEY &&
+      process.env.LIVEKIT_API_SECRET
+  );
+
+  return res.json({
+    ok: true,
+    service: "AGV LiveKit Token Endpoint",
+    livekitConfigured,
+    livekitUrlConfigured: Boolean(process.env.LIVEKIT_URL),
+    apiKeyConfigured: Boolean(process.env.LIVEKIT_API_KEY),
+    apiSecretConfigured: Boolean(process.env.LIVEKIT_API_SECRET),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.post("/api/livekit/token", requireAuth, async (req, res) => {
+  try {
+    const LIVEKIT_URL = process.env.LIVEKIT_URL;
+    const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
+    const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
+
+    if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+      return res.status(500).json({
+        ok: false,
+        error: "LiveKit env not configured",
+        livekitUrlConfigured: Boolean(LIVEKIT_URL),
+        apiKeyConfigured: Boolean(LIVEKIT_API_KEY),
+        apiSecretConfigured: Boolean(LIVEKIT_API_SECRET),
+      });
+    }
+
+    const { AccessToken } = require("livekit-server-sdk");
+
+    const roomName =
+      cleanName(req.body?.roomName) ||
+      cleanName(req.body?.room) ||
+      cleanName(req.body?.roomId) ||
+      "main-hall";
+
+    const requestedRole = cleanName(
+      req.body?.role || req.body?.participantRole || "viewer"
+    ).toLowerCase();
+
+    const identityBase =
+      cleanName(req.body?.identity) ||
+      cleanName(req.body?.participantIdentity) ||
+      cleanName(req.authUser?.username) ||
+      cleanName(req.authUser?.displayName) ||
+      "agv-user";
+
+    const displayName =
+      cleanName(req.body?.name) ||
+      cleanName(req.body?.displayName) ||
+      cleanName(req.authUser?.displayName) ||
+      identityBase;
+
+    const identity =
+      identityBase
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "") +
+      "-" +
+      Date.now();
+
+    const canPublish =
+      req.authUser?.globalRole === "superadmin" ||
+      requestedRole === "host" ||
+      requestedRole === "admin" ||
+      requestedRole === "moderator" ||
+      requestedRole === "superadmin" ||
+      requestedRole === "super-admin" ||
+      req.body?.canPublish === true;
+
+    const token = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+      identity,
+      name: displayName,
+      metadata: JSON.stringify({
+        agv: true,
+        role: requestedRole,
+        username: req.authUser?.username || "",
+        displayName,
+      }),
+    });
+
+    token.addGrant({
+      roomJoin: true,
+      room: roomName,
+      canSubscribe: true,
+      canPublish,
+      canPublishData: true,
+    });
+
+    const jwt = await token.toJwt();
+
+    return res.json({
+      ok: true,
+      token: jwt,
+      participant_token: jwt,
+      server_url: LIVEKIT_URL,
+      url: LIVEKIT_URL,
+      roomName,
+      identity,
+      name: displayName,
+      canPublish,
+    });
+  } catch (error) {
+    console.error("LIVEKIT TOKEN ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: "LiveKit token failed",
+      message: error?.message || "Unknown LiveKit token error",
+    });
+  }
 });
 
 app.post("/api/auth/login", (req, res) => {
