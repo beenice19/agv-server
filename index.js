@@ -1841,6 +1841,185 @@ app.post("/api/broadcast/stop", (req, res) => {
   });
 });
 
+
+
+// PASS_BCAST3_CLOUDFLARE_STREAM_RTMP_FOUNDATION
+// SERVER FIRST — Cloudflare Stream / RTMP Foundation.
+// This adds Cloudflare broadcast configuration and start/stop endpoints.
+// It does not start LiveKit Egress yet.
+// It does not expose stream keys or API tokens.
+
+function agvCloudflareBroadcastConfig() {
+  const playbackUrl =
+    process.env.AGV_CLOUDFLARE_PLAYBACK_URL ||
+    process.env.CLOUDFLARE_STREAM_PLAYBACK_URL ||
+    "";
+
+  const embedUrl =
+    process.env.AGV_CLOUDFLARE_EMBED_URL ||
+    process.env.CLOUDFLARE_STREAM_EMBED_URL ||
+    "";
+
+  const hlsUrl =
+    process.env.AGV_CLOUDFLARE_HLS_URL ||
+    process.env.CLOUDFLARE_STREAM_HLS_URL ||
+    "";
+
+  const rtmpIngestUrl =
+    process.env.AGV_CLOUDFLARE_RTMP_INGEST_URL ||
+    process.env.CLOUDFLARE_RTMP_INGEST_URL ||
+    "";
+
+  const srtIngestUrl =
+    process.env.AGV_CLOUDFLARE_SRT_INGEST_URL ||
+    process.env.CLOUDFLARE_SRT_INGEST_URL ||
+    "";
+
+  const streamKey =
+    process.env.AGV_CLOUDFLARE_STREAM_KEY ||
+    process.env.CLOUDFLARE_STREAM_KEY ||
+    "";
+
+  const accountId =
+    process.env.AGV_CLOUDFLARE_ACCOUNT_ID ||
+    process.env.CLOUDFLARE_ACCOUNT_ID ||
+    "";
+
+  const apiToken =
+    process.env.AGV_CLOUDFLARE_API_TOKEN ||
+    process.env.CLOUDFLARE_API_TOKEN ||
+    "";
+
+  return {
+    provider: "cloudflare",
+    playbackUrl: agvCleanBroadcastUrl(playbackUrl),
+    embedUrl: agvCleanBroadcastUrl(embedUrl),
+    hlsUrl: agvCleanBroadcastUrl(hlsUrl),
+    hasPlaybackUrl: Boolean(playbackUrl || embedUrl || hlsUrl),
+    rtmpIngestUrlConfigured: Boolean(rtmpIngestUrl),
+    srtIngestUrlConfigured: Boolean(srtIngestUrl),
+    streamKeyConfigured: Boolean(streamKey),
+    accountIdConfigured: Boolean(accountId),
+    apiTokenConfigured: Boolean(apiToken),
+  };
+}
+
+function agvChooseCloudflarePlayback(body = {}) {
+  const envConfig = agvCloudflareBroadcastConfig();
+
+  const bodyEmbedUrl = agvCleanBroadcastUrl(body.embedUrl);
+  const bodyPlaybackUrl = agvCleanBroadcastUrl(body.playbackUrl);
+  const bodyHlsUrl = agvCleanBroadcastUrl(body.hlsUrl);
+
+  return {
+    embedUrl: bodyEmbedUrl || envConfig.embedUrl || "",
+    playbackUrl: bodyPlaybackUrl || envConfig.playbackUrl || "",
+    hlsUrl: bodyHlsUrl || envConfig.hlsUrl || "",
+  };
+}
+
+app.get("/api/broadcast/cloudflare/health", (req, res) => {
+  const state = agvReadBroadcastState();
+  const config = agvCloudflareBroadcastConfig();
+
+  return res.json({
+    ok: true,
+    service: "AGV Cloudflare Broadcast Foundation",
+    pass: "BCAST-3",
+    provider: "cloudflare",
+    broadcastStatus: state.status,
+    isLive: Boolean(state.isLive),
+    viewerMode: state.viewerMode || "livekit",
+    roomId: state.roomId || "main-hall",
+    hasPlaybackUrl: Boolean(state.playbackUrl || state.embedUrl || state.hlsUrl || config.hasPlaybackUrl),
+    cloudflare: {
+      hasEnvPlaybackUrl: config.hasPlaybackUrl,
+      rtmpIngestUrlConfigured: config.rtmpIngestUrlConfigured,
+      srtIngestUrlConfigured: config.srtIngestUrlConfigured,
+      streamKeyConfigured: config.streamKeyConfigured,
+      accountIdConfigured: config.accountIdConfigured,
+      apiTokenConfigured: config.apiTokenConfigured,
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/api/broadcast/cloudflare/config-check", (req, res) => {
+  const config = agvCloudflareBroadcastConfig();
+
+  return res.json({
+    ok: true,
+    service: "AGV Cloudflare Stream Config Check",
+    pass: "BCAST-3",
+    expected: {
+      playback: "AGV_CLOUDFLARE_EMBED_URL or AGV_CLOUDFLARE_PLAYBACK_URL or AGV_CLOUDFLARE_HLS_URL",
+      ingest: "AGV_CLOUDFLARE_RTMP_INGEST_URL or AGV_CLOUDFLARE_SRT_INGEST_URL plus AGV_CLOUDFLARE_STREAM_KEY",
+      secrets: "Stream keys and API tokens are never returned by this endpoint.",
+    },
+    current: {
+      hasPlaybackUrl: config.hasPlaybackUrl,
+      rtmpIngestUrlConfigured: config.rtmpIngestUrlConfigured,
+      srtIngestUrlConfigured: config.srtIngestUrlConfigured,
+      streamKeyConfigured: config.streamKeyConfigured,
+      accountIdConfigured: config.accountIdConfigured,
+      apiTokenConfigured: config.apiTokenConfigured,
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.post("/api/broadcast/cloudflare/start", (req, res) => {
+  const body = req.body || {};
+  const playback = agvChooseCloudflarePlayback(body);
+
+  const next = agvWriteBroadcastState({
+    provider: "cloudflare",
+    status: "live",
+    isLive: true,
+    roomId: agvCleanBroadcastText(body.roomId, "main-hall") || "main-hall",
+    title: agvCleanBroadcastText(body.title, "AGV Cloudflare Broadcast") || "AGV Cloudflare Broadcast",
+    playbackUrl: playback.playbackUrl,
+    embedUrl: playback.embedUrl,
+    hlsUrl: playback.hlsUrl,
+    viewerMode: "broadcast",
+    message:
+      agvCleanBroadcastText(body.message, "Cloudflare broadcast mode is live.") ||
+      "Cloudflare broadcast mode is live.",
+    rtmpIngestUrlConfigured: agvCloudflareBroadcastConfig().rtmpIngestUrlConfigured,
+  });
+
+  return res.json({
+    ok: true,
+    service: "AGV Cloudflare Broadcast Start",
+    pass: "BCAST-3",
+    state: next,
+    note:
+      playback.embedUrl || playback.playbackUrl || playback.hlsUrl
+        ? "Cloudflare broadcast state is live with a playback URL."
+        : "Cloudflare broadcast state is live, but no playback URL is configured yet.",
+  });
+});
+
+app.post("/api/broadcast/cloudflare/stop", (req, res) => {
+  const body = req.body || {};
+
+  const next = agvWriteBroadcastState({
+    status: "off",
+    isLive: false,
+    viewerMode: agvCleanBroadcastText(body.viewerMode, "livekit") || "livekit",
+    message:
+      agvCleanBroadcastText(body.message, "Cloudflare broadcast mode is off.") ||
+      "Cloudflare broadcast mode is off.",
+  });
+
+  return res.json({
+    ok: true,
+    service: "AGV Cloudflare Broadcast Stop",
+    pass: "BCAST-3",
+    state: next,
+  });
+});
+
 server.listen(PORT, () => {
   const usersFileExists = fs.existsSync(USERS_FILE);
 
