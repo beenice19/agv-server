@@ -1650,6 +1650,197 @@ io.on("connection", (socket) => {
   });
 });
 
+
+
+// PASS_BCAST1_BROADCAST_MODE_FOUNDATION
+// SERVER FIRST — Broadcast Mode Foundation.
+// This stores AGV broadcast viewer mode state only.
+// It does not start Cloudflare, LiveKit Egress, RTMP, HLS, camera, or screen share.
+
+const AGV_BCAST_FS = require("fs");
+const AGV_BCAST_PATH = require("path");
+const AGV_BROADCAST_STATE_FILE = AGV_BCAST_PATH.join(__dirname, "agv-broadcast-state.json");
+
+function agvBroadcastDefaultState() {
+  return {
+    ok: true,
+    service: "AGV Broadcast Mode",
+    pass: "BCAST-1",
+    provider: "manual",
+    status: "off",
+    isLive: false,
+    roomId: "main-hall",
+    title: "AGV Broadcast",
+    playbackUrl: "",
+    embedUrl: "",
+    hlsUrl: "",
+    viewerMode: "livekit",
+    message: "Broadcast mode is off.",
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function agvCleanBroadcastText(value, fallback = "") {
+  return String(value ?? fallback).trim();
+}
+
+function agvCleanBroadcastUrl(value) {
+  const clean = agvCleanBroadcastText(value, "");
+  if (!clean) return "";
+
+  if (
+    clean.startsWith("https://") ||
+    clean.startsWith("http://") ||
+    clean.startsWith("wss://") ||
+    clean.startsWith("rtmps://") ||
+    clean.startsWith("rtmp://") ||
+    clean.startsWith("srt://")
+  ) {
+    return clean;
+  }
+
+  return "";
+}
+
+function agvReadBroadcastState() {
+  try {
+    if (!AGV_BCAST_FS.existsSync(AGV_BROADCAST_STATE_FILE)) {
+      const initial = agvBroadcastDefaultState();
+      AGV_BCAST_FS.writeFileSync(
+        AGV_BROADCAST_STATE_FILE,
+        JSON.stringify(initial, null, 2),
+        "utf8"
+      );
+      return initial;
+    }
+
+    const raw = AGV_BCAST_FS.readFileSync(AGV_BROADCAST_STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+
+    return {
+      ...agvBroadcastDefaultState(),
+      ...parsed,
+      ok: true,
+      service: "AGV Broadcast Mode",
+      pass: "BCAST-1"
+    };
+  } catch (error) {
+    console.error("AGV BROADCAST READ ERROR:", error);
+    return agvBroadcastDefaultState();
+  }
+}
+
+function agvWriteBroadcastState(nextState) {
+  const current = agvReadBroadcastState();
+
+  const safe = {
+    ...current,
+    ...nextState,
+    ok: true,
+    service: "AGV Broadcast Mode",
+    pass: "BCAST-1",
+    updatedAt: new Date().toISOString()
+  };
+
+  AGV_BCAST_FS.writeFileSync(
+    AGV_BROADCAST_STATE_FILE,
+    JSON.stringify(safe, null, 2),
+    "utf8"
+  );
+
+  return safe;
+}
+
+app.get("/api/broadcast/health", (req, res) => {
+  const state = agvReadBroadcastState();
+
+  return res.json({
+    ok: true,
+    service: "AGV Broadcast Mode Foundation",
+    pass: "BCAST-1",
+    status: state.status,
+    isLive: Boolean(state.isLive),
+    provider: state.provider || "manual",
+    viewerMode: state.viewerMode || "livekit",
+    roomId: state.roomId || "main-hall",
+    hasPlaybackUrl: Boolean(state.playbackUrl || state.embedUrl || state.hlsUrl),
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get("/api/broadcast/state", (req, res) => {
+  return res.json({
+    ok: true,
+    state: agvReadBroadcastState()
+  });
+});
+
+app.post("/api/broadcast/state", (req, res) => {
+  const body = req.body || {};
+
+  const next = agvWriteBroadcastState({
+    provider: agvCleanBroadcastText(body.provider, "manual") || "manual",
+    status: agvCleanBroadcastText(body.status, "off") || "off",
+    isLive: Boolean(body.isLive),
+    roomId: agvCleanBroadcastText(body.roomId, "main-hall") || "main-hall",
+    title: agvCleanBroadcastText(body.title, "AGV Broadcast") || "AGV Broadcast",
+    playbackUrl: agvCleanBroadcastUrl(body.playbackUrl),
+    embedUrl: agvCleanBroadcastUrl(body.embedUrl),
+    hlsUrl: agvCleanBroadcastUrl(body.hlsUrl),
+    viewerMode: agvCleanBroadcastText(body.viewerMode, "broadcast") || "broadcast",
+    message:
+      agvCleanBroadcastText(body.message, "") ||
+      (body.isLive ? "Broadcast mode is live." : "Broadcast mode is off.")
+  });
+
+  return res.json({
+    ok: true,
+    state: next
+  });
+});
+
+app.post("/api/broadcast/start", (req, res) => {
+  const body = req.body || {};
+
+  const next = agvWriteBroadcastState({
+    provider: agvCleanBroadcastText(body.provider, "manual") || "manual",
+    status: "live",
+    isLive: true,
+    roomId: agvCleanBroadcastText(body.roomId, "main-hall") || "main-hall",
+    title: agvCleanBroadcastText(body.title, "AGV Broadcast") || "AGV Broadcast",
+    playbackUrl: agvCleanBroadcastUrl(body.playbackUrl),
+    embedUrl: agvCleanBroadcastUrl(body.embedUrl),
+    hlsUrl: agvCleanBroadcastUrl(body.hlsUrl),
+    viewerMode: "broadcast",
+    message:
+      agvCleanBroadcastText(body.message, "Broadcast mode is live.") ||
+      "Broadcast mode is live."
+  });
+
+  return res.json({
+    ok: true,
+    state: next
+  });
+});
+
+app.post("/api/broadcast/stop", (req, res) => {
+  const body = req.body || {};
+
+  const next = agvWriteBroadcastState({
+    status: "off",
+    isLive: false,
+    viewerMode: agvCleanBroadcastText(body.viewerMode, "livekit") || "livekit",
+    message:
+      agvCleanBroadcastText(body.message, "Broadcast mode is off.") ||
+      "Broadcast mode is off."
+  });
+
+  return res.json({
+    ok: true,
+    state: next
+  });
+});
+
 server.listen(PORT, () => {
   const usersFileExists = fs.existsSync(USERS_FILE);
 
