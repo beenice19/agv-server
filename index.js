@@ -2116,6 +2116,32 @@ function agvSafeJsonValue(value) {
   return value;
 }
 
+// PASS_BCAST7_EGRESS_RECORD_AGV_LAYOUT_URL
+function agvClientBroadcastBaseUrl() {
+  const raw =
+    process.env.AGV_CLIENT_BASE_URL ||
+    process.env.AGV_BROADCAST_CLIENT_BASE_URL ||
+    "https://agv-client.vercel.app";
+
+  return String(raw || "https://agv-client.vercel.app").trim().replace(/\/+$/, "");
+}
+
+function agvBuildBroadcastLayoutUrl(roomId, body = {}) {
+  const override =
+    agvCleanBroadcastUrl(body.broadcastLayoutUrl) ||
+    agvCleanBroadcastUrl(process.env.AGV_BROADCAST_LAYOUT_URL) ||
+    "";
+
+  if (override) {
+    return override;
+  }
+
+  const base = agvClientBroadcastBaseUrl();
+  const cleanRoom = encodeURIComponent(roomId || "main-hall");
+
+  return `${base}/?agvBroadcastLayout=1&roomId=${cleanRoom}`;
+}
+
 function agvSafeEgressSummary(info) {
   if (!info) return null;
 
@@ -2226,14 +2252,13 @@ app.post("/api/broadcast/egress/start", async (req, res) => {
       };
     }
 
-    // PASS_BCAST4C_DEFAULT_EGRESS_LAYOUT_SCREEN_SHARE
-    // Default to screen-share so shared screens become the main Cloudflare broadcast view.
-    const layout = agvCleanBroadcastText(body.layout, "screen-share") || "screen-share";
+    // PASS_BCAST7_EGRESS_RECORD_AGV_LAYOUT_URL
+    // Record AGV's custom broadcast layout page instead of LiveKit's default split/composite layout.
+    const broadcastLayoutUrl = agvBuildBroadcastLayoutUrl(roomId, body);
 
-    const info = await egressClient.startRoomCompositeEgress(
-      roomId,
-      output,
-      layout
+    const info = await egressClient.startWebEgress(
+      broadcastLayoutUrl,
+      output
     );
 
     const safeInfo = agvSafeEgressSummary(info);
@@ -2259,6 +2284,8 @@ app.post("/api/broadcast/egress/start", async (req, res) => {
       egressStatus: safeInfo?.status || "started",
       egressStartedAt: new Date().toISOString(),
       egressUpdatedAt: new Date().toISOString(),
+      egressLayoutMode: "agv-web-layout",
+      egressLayoutUrl: broadcastLayoutUrl,
       egressError: "",
     });
 
@@ -2268,7 +2295,8 @@ app.post("/api/broadcast/egress/start", async (req, res) => {
       pass: "BCAST-4",
       state: next,
       egress: safeInfo,
-      note: "LiveKit egress start request was sent to Cloudflare RTMPS.",
+      layoutUrl: broadcastLayoutUrl,
+      note: "LiveKit web egress is recording the AGV broadcast layout page and sending it to Cloudflare RTMPS.",
     });
   } catch (error) {
     const message = error?.message || String(error);
