@@ -2089,15 +2089,44 @@ function agvCloudflareRtmpStreamUrl() {
   return cleanIngest + "/" + cleanKey;
 }
 
+// PASS_BCAST4A_FIX_EGRESS_BIGINT_JSON
+function agvSafeJsonValue(value) {
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => agvSafeJsonValue(item));
+  }
+
+  if (value && typeof value === "object") {
+    const clean = {};
+
+    for (const [key, item] of Object.entries(value)) {
+      clean[key] = agvSafeJsonValue(item);
+    }
+
+    return clean;
+  }
+
+  return value;
+}
+
 function agvSafeEgressSummary(info) {
   if (!info) return null;
 
+  const safeInfo = agvSafeJsonValue(info);
+
   return {
-    egressId: info.egressId || info.egress_id || info.id || "",
-    roomName: info.roomName || info.room_name || "",
-    status: info.status || "",
-    startedAt: info.startedAt || info.started_at || "",
-    updatedAt: info.updatedAt || info.updated_at || "",
+    egressId: String(safeInfo.egressId || safeInfo.egress_id || safeInfo.id || ""),
+    roomName: String(safeInfo.roomName || safeInfo.room_name || ""),
+    status: String(safeInfo.status || ""),
+    startedAt: String(safeInfo.startedAt || safeInfo.started_at || ""),
+    updatedAt: String(safeInfo.updatedAt || safeInfo.updated_at || ""),
   };
 }
 
