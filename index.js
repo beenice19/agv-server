@@ -2226,7 +2226,9 @@ app.post("/api/broadcast/egress/start", async (req, res) => {
       };
     }
 
-    const layout = agvCleanBroadcastText(body.layout, "speaker-dark") || "speaker-dark";
+    // PASS_BCAST4C_DEFAULT_EGRESS_LAYOUT_SCREEN_SHARE
+    // Default to screen-share so shared screens become the main Cloudflare broadcast view.
+    const layout = agvCleanBroadcastText(body.layout, "screen-share") || "screen-share";
 
     const info = await egressClient.startRoomCompositeEgress(
       roomId,
