@@ -2020,6 +2020,322 @@ app.post("/api/broadcast/cloudflare/stop", (req, res) => {
   });
 });
 
+
+
+// PASS_BCAST4_LIVEKIT_EGRESS_CLOUDFLARE_RTMP
+// SERVER — LiveKit Egress to Cloudflare RTMP.
+// This starts/stops LiveKit Room Composite Egress to Cloudflare RTMPS.
+// It does not change client camera, screen share, tickets, chat, bulletin, rooms, payments, or Super Admin logic.
+
+function agvLiveKitHttpUrl() {
+  const raw =
+    process.env.LIVEKIT_URL ||
+    process.env.AGv_LIVEKIT_URL ||
+    "";
+
+  return String(raw || "")
+    .trim()
+    .replace(/^wss:\/\//i, "https://")
+    .replace(/^ws:\/\//i, "http://");
+}
+
+function agvLiveKitEgressConfig() {
+  const livekitUrl = agvLiveKitHttpUrl();
+  const apiKey = String(process.env.LIVEKIT_API_KEY || "").trim();
+  const apiSecret = String(process.env.LIVEKIT_API_SECRET || "").trim();
+  const cf = agvCloudflareBroadcastConfig();
+
+  return {
+    livekitUrl,
+    livekitConfigured: Boolean(livekitUrl && apiKey && apiSecret),
+    apiKeyConfigured: Boolean(apiKey),
+    apiSecretConfigured: Boolean(apiSecret),
+    cloudflarePlaybackConfigured: Boolean(cf.hasPlaybackUrl),
+    cloudflareRtmpConfigured: Boolean(cf.rtmpIngestUrlConfigured),
+    cloudflareStreamKeyConfigured: Boolean(cf.streamKeyConfigured),
+  };
+}
+
+function agvCloudflareRtmpStreamUrl() {
+  const ingest =
+    process.env.AGV_CLOUDFLARE_RTMP_INGEST_URL ||
+    process.env.CLOUDFLARE_RTMP_INGEST_URL ||
+    "";
+
+  const streamKey =
+    process.env.AGV_CLOUDFLARE_STREAM_KEY ||
+    process.env.CLOUDFLARE_STREAM_KEY ||
+    "";
+
+  const cleanIngest = String(ingest || "").trim();
+  const cleanKey = String(streamKey || "").trim();
+
+  if (!cleanIngest || !cleanKey) {
+    return "";
+  }
+
+  if (!cleanIngest.startsWith("rtmp://") && !cleanIngest.startsWith("rtmps://")) {
+    return "";
+  }
+
+  if (cleanIngest.includes(cleanKey)) {
+    return cleanIngest;
+  }
+
+  if (cleanIngest.endsWith("/")) {
+    return cleanIngest + cleanKey;
+  }
+
+  return cleanIngest + "/" + cleanKey;
+}
+
+function agvSafeEgressSummary(info) {
+  if (!info) return null;
+
+  return {
+    egressId: info.egressId || info.egress_id || info.id || "",
+    roomName: info.roomName || info.room_name || "",
+    status: info.status || "",
+    startedAt: info.startedAt || info.started_at || "",
+    updatedAt: info.updatedAt || info.updated_at || "",
+  };
+}
+
+app.get("/api/broadcast/egress/health", (req, res) => {
+  const state = agvReadBroadcastState();
+  const config = agvLiveKitEgressConfig();
+
+  return res.json({
+    ok: true,
+    service: "AGV LiveKit Egress to Cloudflare RTMP",
+    pass: "BCAST-4",
+    broadcastStatus: state.status,
+    viewerMode: state.viewerMode || "livekit",
+    roomId: state.roomId || "main-hall",
+    egressId: state.egressId || "",
+    egressStatus: state.egressStatus || "",
+    config: {
+      livekitConfigured: config.livekitConfigured,
+      apiKeyConfigured: config.apiKeyConfigured,
+      apiSecretConfigured: config.apiSecretConfigured,
+      cloudflarePlaybackConfigured: config.cloudflarePlaybackConfigured,
+      cloudflareRtmpConfigured: config.cloudflareRtmpConfigured,
+      cloudflareStreamKeyConfigured: config.cloudflareStreamKeyConfigured,
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.post("/api/broadcast/egress/start", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const roomId = agvCleanBroadcastText(body.roomId, "main-hall") || "main-hall";
+    const title =
+      agvCleanBroadcastText(body.title, "AGV Live Broadcast") ||
+      "AGV Live Broadcast";
+
+    const config = agvLiveKitEgressConfig();
+
+    if (!config.livekitConfigured) {
+      return res.status(500).json({
+        ok: false,
+        pass: "BCAST-4",
+        error: "LiveKit egress is not configured. Check LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET.",
+      });
+    }
+
+    if (!config.cloudflareRtmpConfigured || !config.cloudflareStreamKeyConfigured) {
+      return res.status(500).json({
+        ok: false,
+        pass: "BCAST-4",
+        error: "Cloudflare RTMPS ingest is not configured. Check AGV_CLOUDFLARE_RTMP_INGEST_URL and AGV_CLOUDFLARE_STREAM_KEY.",
+      });
+    }
+
+    const streamUrl = agvCloudflareRtmpStreamUrl();
+
+    if (!streamUrl) {
+      return res.status(500).json({
+        ok: false,
+        pass: "BCAST-4",
+        error: "Could not build Cloudflare RTMPS stream URL.",
+      });
+    }
+
+    const {
+      EgressClient,
+      StreamOutput,
+      StreamProtocol,
+    } = require("livekit-server-sdk");
+
+    const egressClient = new EgressClient(
+      config.livekitUrl,
+      process.env.LIVEKIT_API_KEY,
+      process.env.LIVEKIT_API_SECRET
+    );
+
+    let output;
+
+    try {
+      output = new StreamOutput({
+        protocol: StreamProtocol.RTMP,
+        urls: [streamUrl],
+      });
+    } catch {
+      output = {
+        protocol: StreamProtocol.RTMP,
+        urls: [streamUrl],
+      };
+    }
+
+    const layout = agvCleanBroadcastText(body.layout, "speaker-dark") || "speaker-dark";
+
+    const info = await egressClient.startRoomCompositeEgress(
+      roomId,
+      output,
+      layout
+    );
+
+    const safeInfo = agvSafeEgressSummary(info);
+    const egressId = safeInfo?.egressId || info?.egressId || "";
+
+    const playback = agvChooseCloudflarePlayback(body);
+
+    const next = agvWriteBroadcastState({
+      provider: "cloudflare",
+      status: "live",
+      isLive: true,
+      viewerMode: "broadcast",
+      roomId,
+      title,
+      playbackUrl: playback.playbackUrl,
+      embedUrl: playback.embedUrl,
+      hlsUrl: playback.hlsUrl,
+      message:
+        agvCleanBroadcastText(body.message, "LiveKit is sending the stage to Cloudflare broadcast.") ||
+        "LiveKit is sending the stage to Cloudflare broadcast.",
+      rtmpIngestUrlConfigured: true,
+      egressId,
+      egressStatus: safeInfo?.status || "started",
+      egressStartedAt: new Date().toISOString(),
+      egressUpdatedAt: new Date().toISOString(),
+      egressError: "",
+    });
+
+    return res.json({
+      ok: true,
+      service: "AGV LiveKit Egress Start",
+      pass: "BCAST-4",
+      state: next,
+      egress: safeInfo,
+      note: "LiveKit egress start request was sent to Cloudflare RTMPS.",
+    });
+  } catch (error) {
+    const message = error?.message || String(error);
+
+    agvWriteBroadcastState({
+      egressError: message,
+      egressUpdatedAt: new Date().toISOString(),
+    });
+
+    return res.status(500).json({
+      ok: false,
+      service: "AGV LiveKit Egress Start",
+      pass: "BCAST-4",
+      error: message,
+    });
+  }
+});
+
+app.post("/api/broadcast/egress/stop", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const current = agvReadBroadcastState();
+    const egressId = agvCleanBroadcastText(body.egressId || current.egressId, "");
+
+    if (!egressId) {
+      const next = agvWriteBroadcastState({
+        status: "off",
+        isLive: false,
+        viewerMode: "livekit",
+        egressStatus: "not-found",
+        egressUpdatedAt: new Date().toISOString(),
+        message:
+          agvCleanBroadcastText(body.message, "Broadcast egress was marked off.") ||
+          "Broadcast egress was marked off.",
+      });
+
+      return res.json({
+        ok: true,
+        service: "AGV LiveKit Egress Stop",
+        pass: "BCAST-4",
+        state: next,
+        note: "No egressId was saved, so AGV marked broadcast mode off.",
+      });
+    }
+
+    const config = agvLiveKitEgressConfig();
+
+    if (!config.livekitConfigured) {
+      return res.status(500).json({
+        ok: false,
+        pass: "BCAST-4",
+        error: "LiveKit egress is not configured.",
+      });
+    }
+
+    const { EgressClient } = require("livekit-server-sdk");
+
+    const egressClient = new EgressClient(
+      config.livekitUrl,
+      process.env.LIVEKIT_API_KEY,
+      process.env.LIVEKIT_API_SECRET
+    );
+
+    const info = await egressClient.stopEgress(egressId);
+    const safeInfo = agvSafeEgressSummary(info);
+
+    const next = agvWriteBroadcastState({
+      status: "off",
+      isLive: false,
+      viewerMode: "livekit",
+      egressStatus: safeInfo?.status || "stopped",
+      egressUpdatedAt: new Date().toISOString(),
+      egressError: "",
+      message:
+        agvCleanBroadcastText(body.message, "LiveKit egress to Cloudflare is off.") ||
+        "LiveKit egress to Cloudflare is off.",
+    });
+
+    return res.json({
+      ok: true,
+      service: "AGV LiveKit Egress Stop",
+      pass: "BCAST-4",
+      state: next,
+      egress: safeInfo,
+    });
+  } catch (error) {
+    const message = error?.message || String(error);
+
+    const next = agvWriteBroadcastState({
+      status: "off",
+      isLive: false,
+      viewerMode: "livekit",
+      egressStatus: "stop-error",
+      egressError: message,
+      egressUpdatedAt: new Date().toISOString(),
+    });
+
+    return res.status(500).json({
+      ok: false,
+      service: "AGV LiveKit Egress Stop",
+      pass: "BCAST-4",
+      state: next,
+      error: message,
+    });
+  }
+});
+
 server.listen(PORT, () => {
   const usersFileExists = fs.existsSync(USERS_FILE);
 
