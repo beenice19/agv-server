@@ -2141,8 +2141,17 @@ app.get("/api/broadcast/egress/health", (req, res) => {
     broadcastStatus: state.status,
     viewerMode: state.viewerMode || "livekit",
     roomId: state.roomId || "main-hall",
-    egressId: state.egressId || "",
-    egressStatus: state.egressStatus || "",
+    // PASS_BCAST4B_CLEAR_STOPPED_EGRESS_DISPLAY
+    egressId: state.status === "live" ? state.egressId || "" : "",
+    egressStatus:
+      state.status === "live"
+        ? state.egressStatus || ""
+        : state.egressStatus === "not-found"
+          ? "not-found"
+          : state.egressStatus === "stop-error"
+            ? "stop-error"
+            : "stopped",
+    lastEgressId: state.lastEgressId || (state.status === "live" ? "" : state.egressId || ""),
     config: {
       livekitConfigured: config.livekitConfigured,
       apiKeyConfigured: config.apiKeyConfigured,
@@ -2287,6 +2296,8 @@ app.post("/api/broadcast/egress/stop", async (req, res) => {
         status: "off",
         isLive: false,
         viewerMode: "livekit",
+        lastEgressId: current.lastEgressId || current.egressId || "",
+        egressId: "",
         egressStatus: "not-found",
         egressUpdatedAt: new Date().toISOString(),
         message:
@@ -2328,7 +2339,9 @@ app.post("/api/broadcast/egress/stop", async (req, res) => {
       status: "off",
       isLive: false,
       viewerMode: "livekit",
-      egressStatus: safeInfo?.status || "stopped",
+      lastEgressId: egressId,
+      egressId: "",
+      egressStatus: "stopped",
       egressUpdatedAt: new Date().toISOString(),
       egressError: "",
       message:
@@ -2350,6 +2363,8 @@ app.post("/api/broadcast/egress/stop", async (req, res) => {
       status: "off",
       isLive: false,
       viewerMode: "livekit",
+      lastEgressId: current?.egressId || current?.lastEgressId || "",
+      egressId: "",
       egressStatus: "stop-error",
       egressError: message,
       egressUpdatedAt: new Date().toISOString(),
