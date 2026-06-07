@@ -2453,7 +2453,9 @@ app.get("/api/broadcast/direct/health", (req, res) => {
     rtmpIngestUrlConfigured: Boolean(cf.rtmpIngestUrlConfigured),
     streamKeyConfigured: Boolean(cf.streamKeyConfigured),
     directMode: Boolean(state.directMode),
-    note: "Direct mode expects OBS or another encoder to send video directly to Cloudflare RTMPS.",
+    // PASS_SCALE2_CONNECT_DIRECT_BROADCAST_TO_SOURCE_REGISTRY
+    sourceRegistryConnected: typeof agvReadBroadcastSources === "function",
+    note: "Direct mode expects a registered broadcast source feeding Cloudflare RTMPS.",
     timestamp: new Date().toISOString(),
   });
 });
@@ -2463,21 +2465,85 @@ app.post("/api/broadcast/direct/start", (req, res) => {
     const body = req.body || {};
     const cf = agvCloudflareBroadcastConfig();
 
-    if (!cf.hasPlaybackUrl) {
+    const roomId =
+      typeof agvNormalizeBroadcastRoomId === "function"
+        ? agvNormalizeBroadcastRoomId(body.roomId)
+        : agvCleanBroadcastText(body.roomId, "main-hall") || "main-hall";
+
+    const sources =
+      typeof agvReadBroadcastSources === "function"
+        ? agvReadBroadcastSources()
+        : {};
+
+    const registeredSource =
+      sources[roomId] ||
+      (typeof agvDefaultBroadcastSource === "function"
+        ? agvDefaultBroadcastSource(roomId, body)
+        : null);
+
+    const playback = agvChooseCloudflarePlayback({
+      ...body,
+      hlsUrl: registeredSource?.hlsUrl || body.hlsUrl,
+      playbackUrl: registeredSource?.playbackUrl || body.playbackUrl,
+      embedUrl: registeredSource?.embedUrl || body.embedUrl,
+    });
+
+    const hasSourcePlayback =
+      Boolean(registeredSource?.hasPlaybackUrl) ||
+      Boolean(registeredSource?.hlsUrl) ||
+      Boolean(registeredSource?.playbackUrl) ||
+      Boolean(registeredSource?.embedUrl) ||
+      Boolean(playback.hlsUrl) ||
+      Boolean(playback.playbackUrl) ||
+      Boolean(playback.embedUrl) ||
+      Boolean(cf.hasPlaybackUrl);
+
+    if (!hasSourcePlayback) {
       return res.status(500).json({
         ok: false,
         service: "AGV Direct Cloudflare Broadcast Start",
-        pass: "BCAST-DIRECT-1",
-        error: "Cloudflare playback URL is not configured. Check AGV_CLOUDFLARE_EMBED_URL, AGV_CLOUDFLARE_PLAYBACK_URL, or AGV_CLOUDFLARE_HLS_URL.",
+        pass: "SCALE-2",
+        error: "No Cloudflare playback source is configured for this room. Register a broadcast source or check AGV_CLOUDFLARE_HLS_URL.",
+        roomId,
       });
     }
 
-    const roomId = agvCleanBroadcastText(body.roomId, "main-hall") || "main-hall";
-    const title =
-      agvCleanBroadcastText(body.title, "AGV Direct Cloudflare Broadcast") ||
+    const sourceName =
+      agvCleanBroadcastText(body.sourceName, registeredSource?.sourceName || "") ||
+      registeredSource?.sourceName ||
       "AGV Direct Cloudflare Broadcast";
 
-    const playback = agvChooseCloudflarePlayback(body);
+    const title =
+      agvCleanBroadcastText(body.title, sourceName) ||
+      sourceName ||
+      "AGV Direct Cloudflare Broadcast";
+
+    const now = new Date().toISOString();
+
+    let nextSource = registeredSource;
+
+    if (typeof agvMergeBroadcastSource === "function") {
+      nextSource = agvMergeBroadcastSource(registeredSource, {
+        roomId,
+        status: "live",
+        lastStatusMessage:
+          agvCleanBroadcastText(body.message, "AGV direct broadcast source is live.") ||
+          "AGV direct broadcast source is live.",
+        updatedAt: now,
+      });
+    } else {
+      nextSource = {
+        ...(registeredSource || {}),
+        roomId,
+        status: "live",
+        updatedAt: now,
+      };
+    }
+
+    if (typeof agvWriteBroadcastSources === "function") {
+      sources[roomId] = nextSource;
+      agvWriteBroadcastSources(sources);
+    }
 
     const next = agvWriteBroadcastState({
       provider: "cloudflare-direct",
@@ -2485,34 +2551,40 @@ app.post("/api/broadcast/direct/start", (req, res) => {
       isLive: true,
       viewerMode: "broadcast",
       roomId,
+      eventId: nextSource?.eventId || body.eventId || "",
       title,
-      playbackUrl: playback.playbackUrl,
-      embedUrl: playback.embedUrl,
-      hlsUrl: playback.hlsUrl,
+      sourceName,
+      sourceType: nextSource?.sourceType || "direct-rtmps",
+      playbackUrl: playback.playbackUrl || nextSource?.playbackUrl || "",
+      embedUrl: playback.embedUrl || nextSource?.embedUrl || "",
+      hlsUrl: playback.hlsUrl || nextSource?.hlsUrl || "",
       message:
         agvCleanBroadcastText(body.message, "AGV is receiving a direct Cloudflare broadcast feed.") ||
         "AGV is receiving a direct Cloudflare broadcast feed.",
       directMode: true,
+      sourceRegistryConnected: true,
       egressId: "",
       egressStatus: "not-used",
       egressError: "",
       egressLayoutMode: "direct-cloudflare",
-      egressUpdatedAt: new Date().toISOString(),
-      rtmpIngestUrlConfigured: Boolean(cf.rtmpIngestUrlConfigured),
+      egressUpdatedAt: now,
+      rtmpIngestUrlConfigured: Boolean(nextSource?.rtmpConfigured || cf.rtmpIngestUrlConfigured),
+      streamKeyConfigured: Boolean(nextSource?.streamKeyConfigured || cf.streamKeyConfigured),
     });
 
     return res.json({
       ok: true,
       service: "AGV Direct Cloudflare Broadcast Start",
-      pass: "BCAST-DIRECT-1",
+      pass: "SCALE-2",
       state: next,
-      note: "AGV viewer mode is now broadcast. Send video from OBS/encoder directly to Cloudflare RTMPS.",
+      source: nextSource,
+      note: "AGV viewer mode is now broadcast using the registered Cloudflare broadcast source.",
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
       service: "AGV Direct Cloudflare Broadcast Start",
-      pass: "BCAST-DIRECT-1",
+      pass: "SCALE-2",
       error: error?.message || String(error),
     });
   }
@@ -2523,15 +2595,45 @@ app.post("/api/broadcast/direct/stop", (req, res) => {
     const body = req.body || {};
     const current = agvReadBroadcastState();
 
+    const roomId =
+      typeof agvNormalizeBroadcastRoomId === "function"
+        ? agvNormalizeBroadcastRoomId(body.roomId || current.roomId || "main-hall")
+        : agvCleanBroadcastText(body.roomId || current.roomId, "main-hall") || "main-hall";
+
+    const sources =
+      typeof agvReadBroadcastSources === "function"
+        ? agvReadBroadcastSources()
+        : {};
+
+    let nextSource = sources[roomId] || null;
+
+    if (nextSource && typeof agvMergeBroadcastSource === "function") {
+      nextSource = agvMergeBroadcastSource(nextSource, {
+        roomId,
+        status: "standby",
+        lastStatusMessage:
+          agvCleanBroadcastText(body.message, "Direct Cloudflare broadcast mode is off.") ||
+          "Direct Cloudflare broadcast mode is off.",
+      });
+
+      sources[roomId] = nextSource;
+
+      if (typeof agvWriteBroadcastSources === "function") {
+        agvWriteBroadcastSources(sources);
+      }
+    }
+
     const next = agvWriteBroadcastState({
       provider: current.provider || "cloudflare-direct",
       status: "off",
       isLive: false,
       viewerMode: "livekit",
+      roomId,
       egressId: "",
       egressStatus: "not-used",
       egressError: "",
       directMode: false,
+      sourceRegistryConnected: Boolean(nextSource),
       egressLayoutMode: "direct-cloudflare",
       egressUpdatedAt: new Date().toISOString(),
       message:
@@ -2542,15 +2644,16 @@ app.post("/api/broadcast/direct/stop", (req, res) => {
     return res.json({
       ok: true,
       service: "AGV Direct Cloudflare Broadcast Stop",
-      pass: "BCAST-DIRECT-1",
+      pass: "SCALE-2",
       state: next,
-      note: "AGV viewer mode returned to LiveKit. Stop OBS/encoder separately if it is still streaming to Cloudflare.",
+      source: nextSource,
+      note: "AGV viewer mode returned to LiveKit and the registered broadcast source was marked standby.",
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
       service: "AGV Direct Cloudflare Broadcast Stop",
-      pass: "BCAST-DIRECT-1",
+      pass: "SCALE-2",
       error: error?.message || String(error),
     });
   }
