@@ -2460,8 +2460,10 @@ app.get("/api/broadcast/direct/health", (req, res) => {
   });
 });
 
-app.post("/api/broadcast/direct/start", (req, res) => {
+app.post("/api/broadcast/direct/start", async (req, res) => {
   try {
+    // PASS_SCALE4_USE_SUPABASE_SOURCE_REGISTRY_FOR_DIRECT_BROADCAST
+    // Scale-first: Direct Broadcast starts from Supabase source registry when available.
     const body = req.body || {};
     const cf = agvCloudflareBroadcastConfig();
 
@@ -2470,29 +2472,64 @@ app.post("/api/broadcast/direct/start", (req, res) => {
         ? agvNormalizeBroadcastRoomId(body.roomId)
         : agvCleanBroadcastText(body.roomId, "main-hall") || "main-hall";
 
-    const sources =
+    let supabaseSource = null;
+    let supabaseUsed = false;
+    let supabaseError = "";
+
+    try {
+      const dbConfig =
+        typeof agvSupabaseBroadcastConfig === "function"
+          ? agvSupabaseBroadcastConfig()
+          : null;
+
+      const dbClient =
+        typeof agvGetSupabaseBroadcastClient === "function"
+          ? agvGetSupabaseBroadcastClient()
+          : null;
+
+      if (dbClient && dbConfig?.table) {
+        const { data, error } = await dbClient
+          .from(dbConfig.table)
+          .select("*")
+          .eq("room_id", roomId)
+          .maybeSingle();
+
+        if (error) {
+          supabaseError = error.message || String(error);
+        } else if (data) {
+          supabaseSource = agvBroadcastSourceRowToApi(data);
+          supabaseUsed = true;
+        }
+      }
+    } catch (error) {
+      supabaseError = error?.message || String(error);
+    }
+
+    const jsonSources =
       typeof agvReadBroadcastSources === "function"
         ? agvReadBroadcastSources()
         : {};
 
-    const registeredSource =
-      sources[roomId] ||
+    const jsonSource =
+      jsonSources[roomId] ||
       (typeof agvDefaultBroadcastSource === "function"
         ? agvDefaultBroadcastSource(roomId, body)
         : null);
 
+    const selectedSource = supabaseSource || jsonSource || null;
+
     const playback = agvChooseCloudflarePlayback({
       ...body,
-      hlsUrl: registeredSource?.hlsUrl || body.hlsUrl,
-      playbackUrl: registeredSource?.playbackUrl || body.playbackUrl,
-      embedUrl: registeredSource?.embedUrl || body.embedUrl,
+      hlsUrl: selectedSource?.hlsUrl || body.hlsUrl,
+      playbackUrl: selectedSource?.playbackUrl || body.playbackUrl,
+      embedUrl: selectedSource?.embedUrl || body.embedUrl,
     });
 
     const hasSourcePlayback =
-      Boolean(registeredSource?.hasPlaybackUrl) ||
-      Boolean(registeredSource?.hlsUrl) ||
-      Boolean(registeredSource?.playbackUrl) ||
-      Boolean(registeredSource?.embedUrl) ||
+      Boolean(selectedSource?.hasPlaybackUrl) ||
+      Boolean(selectedSource?.hlsUrl) ||
+      Boolean(selectedSource?.playbackUrl) ||
+      Boolean(selectedSource?.embedUrl) ||
       Boolean(playback.hlsUrl) ||
       Boolean(playback.playbackUrl) ||
       Boolean(playback.embedUrl) ||
@@ -2502,15 +2539,17 @@ app.post("/api/broadcast/direct/start", (req, res) => {
       return res.status(500).json({
         ok: false,
         service: "AGV Direct Cloudflare Broadcast Start",
-        pass: "SCALE-2",
-        error: "No Cloudflare playback source is configured for this room. Register a broadcast source or check AGV_CLOUDFLARE_HLS_URL.",
+        pass: "SCALE-4",
+        error: "No Cloudflare playback source is configured for this room. Register a Supabase broadcast source or check AGV_CLOUDFLARE_HLS_URL.",
         roomId,
+        supabaseUsed,
+        supabaseError,
       });
     }
 
     const sourceName =
-      agvCleanBroadcastText(body.sourceName, registeredSource?.sourceName || "") ||
-      registeredSource?.sourceName ||
+      agvCleanBroadcastText(body.sourceName, selectedSource?.sourceName || "") ||
+      selectedSource?.sourceName ||
       "AGV Direct Cloudflare Broadcast";
 
     const title =
@@ -2519,30 +2558,63 @@ app.post("/api/broadcast/direct/start", (req, res) => {
       "AGV Direct Cloudflare Broadcast";
 
     const now = new Date().toISOString();
+    let nextSource = selectedSource || {};
+    let dbUpdateOk = false;
 
-    let nextSource = registeredSource;
+    if (supabaseUsed && typeof agvGetSupabaseBroadcastClient === "function") {
+      try {
+        const dbConfig = agvSupabaseBroadcastConfig();
+        const dbClient = agvGetSupabaseBroadcastClient();
 
-    if (typeof agvMergeBroadcastSource === "function") {
-      nextSource = agvMergeBroadcastSource(registeredSource, {
-        roomId,
-        status: "live",
-        lastStatusMessage:
-          agvCleanBroadcastText(body.message, "AGV direct broadcast source is live.") ||
-          "AGV direct broadcast source is live.",
-        updatedAt: now,
-      });
-    } else {
-      nextSource = {
-        ...(registeredSource || {}),
-        roomId,
-        status: "live",
-        updatedAt: now,
-      };
+        const rowUpdate = {
+          status: "live",
+          last_status_message:
+            agvCleanBroadcastText(body.message, "AGV direct broadcast source is live.") ||
+            "AGV direct broadcast source is live.",
+          updated_at: now,
+        };
+
+        const { data, error } = await dbClient
+          .from(dbConfig.table)
+          .update(rowUpdate)
+          .eq("room_id", roomId)
+          .select("*")
+          .maybeSingle();
+
+        if (error) {
+          supabaseError = error.message || String(error);
+        } else if (data) {
+          nextSource = agvBroadcastSourceRowToApi(data);
+          dbUpdateOk = true;
+        }
+      } catch (error) {
+        supabaseError = error?.message || String(error);
+      }
     }
 
-    if (typeof agvWriteBroadcastSources === "function") {
-      sources[roomId] = nextSource;
-      agvWriteBroadcastSources(sources);
+    if (!supabaseUsed) {
+      if (typeof agvMergeBroadcastSource === "function") {
+        nextSource = agvMergeBroadcastSource(selectedSource, {
+          roomId,
+          status: "live",
+          lastStatusMessage:
+            agvCleanBroadcastText(body.message, "AGV direct broadcast source is live.") ||
+            "AGV direct broadcast source is live.",
+          updatedAt: now,
+        });
+      } else {
+        nextSource = {
+          ...(selectedSource || {}),
+          roomId,
+          status: "live",
+          updatedAt: now,
+        };
+      }
+
+      if (typeof agvWriteBroadcastSources === "function") {
+        jsonSources[roomId] = nextSource;
+        agvWriteBroadcastSources(jsonSources);
+      }
     }
 
     const next = agvWriteBroadcastState({
@@ -2563,6 +2635,10 @@ app.post("/api/broadcast/direct/start", (req, res) => {
         "AGV is receiving a direct Cloudflare broadcast feed.",
       directMode: true,
       sourceRegistryConnected: true,
+      sourceRegistryType: supabaseUsed ? "supabase" : "json",
+      supabaseSourceUsed: Boolean(supabaseUsed),
+      supabaseSourceUpdated: Boolean(dbUpdateOk),
+      supabaseError,
       egressId: "",
       egressStatus: "not-used",
       egressError: "",
@@ -2575,23 +2651,31 @@ app.post("/api/broadcast/direct/start", (req, res) => {
     return res.json({
       ok: true,
       service: "AGV Direct Cloudflare Broadcast Start",
-      pass: "SCALE-2",
+      pass: "SCALE-4",
       state: next,
       source: nextSource,
-      note: "AGV viewer mode is now broadcast using the registered Cloudflare broadcast source.",
+      sourceRegistryType: supabaseUsed ? "supabase" : "json",
+      supabaseSourceUsed: Boolean(supabaseUsed),
+      supabaseSourceUpdated: Boolean(dbUpdateOk),
+      supabaseError,
+      note: supabaseUsed
+        ? "AGV viewer mode is now broadcast using the Supabase registered Cloudflare source."
+        : "AGV viewer mode is now broadcast using the JSON registered Cloudflare source fallback.",
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
       service: "AGV Direct Cloudflare Broadcast Start",
-      pass: "SCALE-2",
+      pass: "SCALE-4",
       error: error?.message || String(error),
     });
   }
 });
 
-app.post("/api/broadcast/direct/stop", (req, res) => {
+app.post("/api/broadcast/direct/stop", async (req, res) => {
   try {
+    // PASS_SCALE4_USE_SUPABASE_SOURCE_REGISTRY_FOR_DIRECT_BROADCAST
+    // Scale-first: Direct Broadcast stops update Supabase source registry when available.
     const body = req.body || {};
     const current = agvReadBroadcastState();
 
@@ -2600,14 +2684,56 @@ app.post("/api/broadcast/direct/stop", (req, res) => {
         ? agvNormalizeBroadcastRoomId(body.roomId || current.roomId || "main-hall")
         : agvCleanBroadcastText(body.roomId || current.roomId, "main-hall") || "main-hall";
 
+    let supabaseSource = null;
+    let supabaseUsed = false;
+    let supabaseError = "";
+    let dbUpdateOk = false;
+
+    try {
+      const dbConfig =
+        typeof agvSupabaseBroadcastConfig === "function"
+          ? agvSupabaseBroadcastConfig()
+          : null;
+
+      const dbClient =
+        typeof agvGetSupabaseBroadcastClient === "function"
+          ? agvGetSupabaseBroadcastClient()
+          : null;
+
+      if (dbClient && dbConfig?.table) {
+        const { data, error } = await dbClient
+          .from(dbConfig.table)
+          .update({
+            status: "standby",
+            last_status_message:
+              agvCleanBroadcastText(body.message, "Direct Cloudflare broadcast mode is off.") ||
+              "Direct Cloudflare broadcast mode is off.",
+            updated_at: new Date().toISOString(),
+          })
+          .eq("room_id", roomId)
+          .select("*")
+          .maybeSingle();
+
+        if (error) {
+          supabaseError = error.message || String(error);
+        } else if (data) {
+          supabaseSource = agvBroadcastSourceRowToApi(data);
+          supabaseUsed = true;
+          dbUpdateOk = true;
+        }
+      }
+    } catch (error) {
+      supabaseError = error?.message || String(error);
+    }
+
     const sources =
       typeof agvReadBroadcastSources === "function"
         ? agvReadBroadcastSources()
         : {};
 
-    let nextSource = sources[roomId] || null;
+    let nextSource = supabaseSource || sources[roomId] || null;
 
-    if (nextSource && typeof agvMergeBroadcastSource === "function") {
+    if (!supabaseUsed && nextSource && typeof agvMergeBroadcastSource === "function") {
       nextSource = agvMergeBroadcastSource(nextSource, {
         roomId,
         status: "standby",
@@ -2634,6 +2760,10 @@ app.post("/api/broadcast/direct/stop", (req, res) => {
       egressError: "",
       directMode: false,
       sourceRegistryConnected: Boolean(nextSource),
+      sourceRegistryType: supabaseUsed ? "supabase" : nextSource ? "json" : "",
+      supabaseSourceUsed: Boolean(supabaseUsed),
+      supabaseSourceUpdated: Boolean(dbUpdateOk),
+      supabaseError,
       egressLayoutMode: "direct-cloudflare",
       egressUpdatedAt: new Date().toISOString(),
       message:
@@ -2644,16 +2774,22 @@ app.post("/api/broadcast/direct/stop", (req, res) => {
     return res.json({
       ok: true,
       service: "AGV Direct Cloudflare Broadcast Stop",
-      pass: "SCALE-2",
+      pass: "SCALE-4",
       state: next,
       source: nextSource,
-      note: "AGV viewer mode returned to LiveKit and the registered broadcast source was marked standby.",
+      sourceRegistryType: supabaseUsed ? "supabase" : nextSource ? "json" : "",
+      supabaseSourceUsed: Boolean(supabaseUsed),
+      supabaseSourceUpdated: Boolean(dbUpdateOk),
+      supabaseError,
+      note: supabaseUsed
+        ? "AGV viewer mode returned to LiveKit and the Supabase registered broadcast source was marked standby."
+        : "AGV viewer mode returned to LiveKit and JSON source fallback was used.",
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
       service: "AGV Direct Cloudflare Broadcast Stop",
-      pass: "SCALE-2",
+      pass: "SCALE-4",
       error: error?.message || String(error),
     });
   }
