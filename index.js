@@ -2891,6 +2891,474 @@ app.post("/api/broadcast/sources/status", (req, res) => {
   }
 });
 
+
+
+// PASS_SCALE3_SUPABASE_BROADCAST_SOURCE_REGISTRY
+// SERVER — Supabase Broadcast Source Registry.
+// Adds database-backed broadcast source routes for scale.
+// Existing JSON registry and Direct Broadcast routes remain untouched in this pass.
+
+const AGV_SUPABASE_BROADCAST_SOURCES_TABLE =
+  process.env.AGV_SUPABASE_BROADCAST_SOURCES_TABLE ||
+  "agv_broadcast_sources";
+
+let agvSupabaseClientCache = null;
+
+function agvSupabaseBroadcastConfig() {
+  const url =
+    process.env.AGV_SUPABASE_URL ||
+    process.env.SUPABASE_URL ||
+    process.env.VITE_SUPABASE_URL ||
+    "";
+
+  const key =
+    process.env.AGV_SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.AGV_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    "";
+
+  return {
+    url: String(url || "").trim(),
+    key: String(key || "").trim(),
+    urlConfigured: Boolean(String(url || "").trim()),
+    keyConfigured: Boolean(String(key || "").trim()),
+    table: AGV_SUPABASE_BROADCAST_SOURCES_TABLE,
+  };
+}
+
+function agvGetSupabaseBroadcastClient() {
+  const config = agvSupabaseBroadcastConfig();
+
+  if (!config.url || !config.key) {
+    return null;
+  }
+
+  if (agvSupabaseClientCache) {
+    return agvSupabaseClientCache;
+  }
+
+  const { createClient } = require("@supabase/supabase-js");
+
+  agvSupabaseClientCache = createClient(config.url, config.key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+
+  return agvSupabaseClientCache;
+}
+
+function agvBroadcastSourceRowToApi(row) {
+  if (!row) return null;
+
+  return {
+    id: row.id || "",
+    roomId: row.room_id || "",
+    eventId: row.event_id || "",
+    sourceName: row.source_name || "",
+    provider: row.provider || "cloudflare",
+    sourceType: row.source_type || "direct-rtmps",
+    status: row.status || "standby",
+    hlsUrl: row.hls_url || "",
+    playbackUrl: row.playback_url || "",
+    embedUrl: row.embed_url || "",
+    rtmpConfigured: Boolean(row.rtmp_configured),
+    streamKeyConfigured: Boolean(row.stream_key_configured),
+    hasPlaybackUrl: Boolean(row.has_playback_url),
+    notes: row.notes || "",
+    lastStatusMessage: row.last_status_message || "",
+    ownerAccountId: row.owner_account_id || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || "",
+  };
+}
+
+function agvBroadcastSourceApiToRow(source) {
+  const now = new Date().toISOString();
+
+  return {
+    room_id: source.roomId || "main-hall",
+    event_id: source.eventId || "",
+    source_name: source.sourceName || "AGV Broadcast Source",
+    provider: source.provider || "cloudflare",
+    source_type: source.sourceType || "direct-rtmps",
+    status: source.status || "standby",
+    hls_url: source.hlsUrl || "",
+    playback_url: source.playbackUrl || "",
+    embed_url: source.embedUrl || "",
+    rtmp_configured: Boolean(source.rtmpConfigured),
+    stream_key_configured: Boolean(source.streamKeyConfigured),
+    has_playback_url: Boolean(source.hasPlaybackUrl),
+    notes: source.notes || "",
+    last_status_message: source.lastStatusMessage || "",
+    owner_account_id: source.ownerAccountId || "",
+    updated_at: now,
+  };
+}
+
+function agvBuildSupabaseBroadcastSource(roomId, body = {}) {
+  const cleanRoomId =
+    typeof agvNormalizeBroadcastRoomId === "function"
+      ? agvNormalizeBroadcastRoomId(roomId || body.roomId)
+      : agvCleanBroadcastText(roomId || body.roomId, "main-hall") || "main-hall";
+
+  const cf = agvCloudflareBroadcastConfig();
+  const playback = agvChooseCloudflarePlayback(body || {});
+
+  return {
+    roomId: cleanRoomId,
+    eventId: agvCleanBroadcastText(body.eventId, "") || "",
+    sourceName:
+      agvCleanBroadcastText(body.sourceName, "AGV Supabase Broadcast Source") ||
+      "AGV Supabase Broadcast Source",
+    provider:
+      agvCleanBroadcastText(body.provider, "cloudflare") ||
+      "cloudflare",
+    sourceType:
+      agvCleanBroadcastText(body.sourceType, "direct-rtmps") ||
+      "direct-rtmps",
+    status:
+      agvCleanBroadcastText(body.status, "standby") ||
+      "standby",
+    hlsUrl: playback.hlsUrl || body.hlsUrl || "",
+    playbackUrl: playback.playbackUrl || body.playbackUrl || "",
+    embedUrl: playback.embedUrl || body.embedUrl || "",
+    rtmpConfigured: Boolean(cf.rtmpIngestUrlConfigured),
+    streamKeyConfigured: Boolean(cf.streamKeyConfigured),
+    hasPlaybackUrl:
+      Boolean(cf.hasPlaybackUrl) ||
+      Boolean(playback.hlsUrl) ||
+      Boolean(playback.playbackUrl) ||
+      Boolean(playback.embedUrl),
+    notes:
+      agvCleanBroadcastText(
+        body.notes,
+        "Supabase-backed broadcast source for scale-first AGV delivery."
+      ) ||
+      "Supabase-backed broadcast source for scale-first AGV delivery.",
+    lastStatusMessage:
+      agvCleanBroadcastText(body.lastStatusMessage || body.message, "") || "",
+    ownerAccountId:
+      agvCleanBroadcastText(body.ownerAccountId, "") || "",
+  };
+}
+
+app.get("/api/broadcast/sources-db/health", async (req, res) => {
+  try {
+    const config = agvSupabaseBroadcastConfig();
+    const client = agvGetSupabaseBroadcastClient();
+
+    if (!client) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV Supabase Broadcast Source Registry",
+        pass: "SCALE-3",
+        configured: {
+          urlConfigured: config.urlConfigured,
+          keyConfigured: config.keyConfigured,
+          table: config.table,
+        },
+        error: "Supabase is not configured. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const { count, error } = await client
+      .from(config.table)
+      .select("id", { count: "exact", head: true });
+
+    if (error) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV Supabase Broadcast Source Registry",
+        pass: "SCALE-3",
+        configured: {
+          urlConfigured: config.urlConfigured,
+          keyConfigured: config.keyConfigured,
+          table: config.table,
+        },
+        error: error.message || String(error),
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return res.json({
+      ok: true,
+      service: "AGV Supabase Broadcast Source Registry",
+      pass: "SCALE-3",
+      sourceCount: count || 0,
+      configured: {
+        urlConfigured: config.urlConfigured,
+        keyConfigured: config.keyConfigured,
+        table: config.table,
+      },
+      note: "Supabase registry is ready for scale-first broadcast source storage.",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Supabase Broadcast Source Registry",
+      pass: "SCALE-3",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+app.get("/api/broadcast/sources-db/list", async (req, res) => {
+  try {
+    const config = agvSupabaseBroadcastConfig();
+    const client = agvGetSupabaseBroadcastClient();
+
+    if (!client) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV Supabase Broadcast Source Registry",
+        pass: "SCALE-3",
+        error: "Supabase is not configured.",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const { data, error } = await client
+      .from(config.table)
+      .select("*")
+      .order("updated_at", { ascending: false });
+
+    if (error) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV Supabase Broadcast Source Registry",
+        pass: "SCALE-3",
+        error: error.message || String(error),
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const sources = (data || []).map(agvBroadcastSourceRowToApi);
+
+    return res.json({
+      ok: true,
+      service: "AGV Supabase Broadcast Source Registry",
+      pass: "SCALE-3",
+      sources,
+      count: sources.length,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Supabase Broadcast Source Registry",
+      pass: "SCALE-3",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+app.get("/api/broadcast/sources-db/:roomId", async (req, res) => {
+  try {
+    const config = agvSupabaseBroadcastConfig();
+    const client = agvGetSupabaseBroadcastClient();
+
+    if (!client) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV Supabase Broadcast Source Registry",
+        pass: "SCALE-3",
+        error: "Supabase is not configured.",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const roomId =
+      typeof agvNormalizeBroadcastRoomId === "function"
+        ? agvNormalizeBroadcastRoomId(req.params.roomId)
+        : agvCleanBroadcastText(req.params.roomId, "main-hall") || "main-hall";
+
+    const { data, error } = await client
+      .from(config.table)
+      .select("*")
+      .eq("room_id", roomId)
+      .maybeSingle();
+
+    if (error) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV Supabase Broadcast Source Registry",
+        pass: "SCALE-3",
+        error: error.message || String(error),
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return res.json({
+      ok: true,
+      service: "AGV Supabase Broadcast Source Registry",
+      pass: "SCALE-3",
+      source: agvBroadcastSourceRowToApi(data),
+      exists: Boolean(data),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Supabase Broadcast Source Registry",
+      pass: "SCALE-3",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+app.post("/api/broadcast/sources-db/register", async (req, res) => {
+  try {
+    const config = agvSupabaseBroadcastConfig();
+    const client = agvGetSupabaseBroadcastClient();
+
+    if (!client) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV Supabase Broadcast Source Registry",
+        pass: "SCALE-3",
+        error: "Supabase is not configured.",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const body = req.body || {};
+    const source = agvBuildSupabaseBroadcastSource(body.roomId, body);
+    const row = agvBroadcastSourceApiToRow(source);
+
+    const { data, error } = await client
+      .from(config.table)
+      .upsert(row, { onConflict: "room_id" })
+      .select("*")
+      .single();
+
+    if (error) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV Supabase Broadcast Source Registry",
+        pass: "SCALE-3",
+        error: error.message || String(error),
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return res.json({
+      ok: true,
+      service: "AGV Supabase Broadcast Source Registry",
+      pass: "SCALE-3",
+      source: agvBroadcastSourceRowToApi(data),
+      message: "Supabase broadcast source registered.",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Supabase Broadcast Source Registry",
+      pass: "SCALE-3",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+app.post("/api/broadcast/sources-db/status", async (req, res) => {
+  try {
+    const config = agvSupabaseBroadcastConfig();
+    const client = agvGetSupabaseBroadcastClient();
+
+    if (!client) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV Supabase Broadcast Source Registry",
+        pass: "SCALE-3",
+        error: "Supabase is not configured.",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const body = req.body || {};
+    const roomId =
+      typeof agvNormalizeBroadcastRoomId === "function"
+        ? agvNormalizeBroadcastRoomId(body.roomId)
+        : agvCleanBroadcastText(body.roomId, "main-hall") || "main-hall";
+
+    const allowedStatuses = [
+      "standby",
+      "ready",
+      "live",
+      "offline",
+      "testing",
+      "error",
+    ];
+
+    const requestedStatus =
+      agvCleanBroadcastText(body.status, "standby") ||
+      "standby";
+
+    const status = allowedStatuses.includes(requestedStatus)
+      ? requestedStatus
+      : "standby";
+
+    const { data, error } = await client
+      .from(config.table)
+      .update({
+        status,
+        last_status_message:
+          agvCleanBroadcastText(body.message || body.lastStatusMessage, "") || "",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("room_id", roomId)
+      .select("*")
+      .maybeSingle();
+
+    if (error) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV Supabase Broadcast Source Registry",
+        pass: "SCALE-3",
+        error: error.message || String(error),
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    if (!data) {
+      return res.status(404).json({
+        ok: false,
+        service: "AGV Supabase Broadcast Source Registry",
+        pass: "SCALE-3",
+        error: "Broadcast source not found for room.",
+        roomId,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return res.json({
+      ok: true,
+      service: "AGV Supabase Broadcast Source Registry",
+      pass: "SCALE-3",
+      source: agvBroadcastSourceRowToApi(data),
+      message: "Supabase broadcast source status updated.",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Supabase Broadcast Source Registry",
+      pass: "SCALE-3",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
 server.listen(PORT, () => {
   const usersFileExists = fs.existsSync(USERS_FILE);
 
