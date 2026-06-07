@@ -2556,6 +2556,238 @@ app.post("/api/broadcast/direct/stop", (req, res) => {
   }
 });
 
+
+
+// PASS_SCALE1_BROADCAST_SOURCE_REGISTRY
+// SERVER — Broadcast Source Registry.
+// Scale-first foundation for mapping AGV rooms/events to Cloudflare broadcast sources.
+// This does not start LiveKit egress and does not change client UI.
+
+const AGV_BROADCAST_SOURCES_FILE =
+  process.env.AGV_BROADCAST_SOURCES_FILE ||
+  path.join(__dirname, "agv-broadcast-sources.json");
+
+function agvReadBroadcastSources() {
+  try {
+    if (!fs.existsSync(AGV_BROADCAST_SOURCES_FILE)) {
+      return {};
+    }
+
+    const raw = fs.readFileSync(AGV_BROADCAST_SOURCES_FILE, "utf8");
+    const parsed = JSON.parse(raw || "{}");
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function agvWriteBroadcastSources(nextSources) {
+  const clean =
+    nextSources && typeof nextSources === "object" && !Array.isArray(nextSources)
+      ? nextSources
+      : {};
+
+  fs.writeFileSync(
+    AGV_BROADCAST_SOURCES_FILE,
+    JSON.stringify(clean, null, 2),
+    "utf8"
+  );
+
+  return clean;
+}
+
+function agvNormalizeBroadcastRoomId(roomId) {
+  return agvCleanBroadcastText(roomId, "main-hall") || "main-hall";
+}
+
+function agvDefaultBroadcastSource(roomId = "main-hall", body = {}) {
+  const cf = agvCloudflareBroadcastConfig();
+  const playback = agvChooseCloudflarePlayback(body || {});
+  const cleanRoomId = agvNormalizeBroadcastRoomId(roomId);
+
+  return {
+    roomId: cleanRoomId,
+    eventId: agvCleanBroadcastText(body.eventId, "") || "",
+    sourceName:
+      agvCleanBroadcastText(body.sourceName, "AGV Main Broadcast Source") ||
+      "AGV Main Broadcast Source",
+    provider: agvCleanBroadcastText(body.provider, "cloudflare") || "cloudflare",
+    sourceType:
+      agvCleanBroadcastText(body.sourceType, "direct-rtmps") || "direct-rtmps",
+    status: agvCleanBroadcastText(body.status, "standby") || "standby",
+    hlsUrl: playback.hlsUrl || "",
+    playbackUrl: playback.playbackUrl || "",
+    embedUrl: playback.embedUrl || "",
+    rtmpConfigured: Boolean(cf.rtmpIngestUrlConfigured),
+    streamKeyConfigured: Boolean(cf.streamKeyConfigured),
+    hasPlaybackUrl: Boolean(cf.hasPlaybackUrl),
+    notes:
+      agvCleanBroadcastText(
+        body.notes,
+        "Broadcast source feeds Cloudflare RTMPS and AGV viewers watch Cloudflare playback."
+      ) ||
+      "Broadcast source feeds Cloudflare RTMPS and AGV viewers watch Cloudflare playback.",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function agvMergeBroadcastSource(existing, incoming) {
+  const now = new Date().toISOString();
+
+  return {
+    ...(existing || {}),
+    ...incoming,
+    roomId: incoming.roomId || existing?.roomId || "main-hall",
+    createdAt: existing?.createdAt || incoming.createdAt || now,
+    updatedAt: now,
+  };
+}
+
+app.get("/api/broadcast/sources/health", (req, res) => {
+  const sources = agvReadBroadcastSources();
+  const cf = agvCloudflareBroadcastConfig();
+
+  return res.json({
+    ok: true,
+    service: "AGV Broadcast Source Registry",
+    pass: "SCALE-1",
+    sourceCount: Object.keys(sources).length,
+    defaultRoomId: "main-hall",
+    cloudflare: {
+      hasPlaybackUrl: Boolean(cf.hasPlaybackUrl),
+      hlsUrlConfigured: Boolean(cf.hlsUrl),
+      embedUrlConfigured: Boolean(cf.embedUrl),
+      rtmpIngestUrlConfigured: Boolean(cf.rtmpIngestUrlConfigured),
+      streamKeyConfigured: Boolean(cf.streamKeyConfigured),
+    },
+    file: path.basename(AGV_BROADCAST_SOURCES_FILE),
+    note: "Scale-first registry maps AGV rooms/events to Cloudflare broadcast sources.",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/api/broadcast/sources/list", (req, res) => {
+  const sources = agvReadBroadcastSources();
+
+  return res.json({
+    ok: true,
+    service: "AGV Broadcast Source Registry",
+    pass: "SCALE-1",
+    sources: Object.values(sources),
+    count: Object.keys(sources).length,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/api/broadcast/sources/:roomId", (req, res) => {
+  const roomId = agvNormalizeBroadcastRoomId(req.params.roomId);
+  const sources = agvReadBroadcastSources();
+
+  const source = sources[roomId] || agvDefaultBroadcastSource(roomId);
+
+  return res.json({
+    ok: true,
+    service: "AGV Broadcast Source Registry",
+    pass: "SCALE-1",
+    source,
+    exists: Boolean(sources[roomId]),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.post("/api/broadcast/sources/register", (req, res) => {
+  try {
+    const body = req.body || {};
+    const roomId = agvNormalizeBroadcastRoomId(body.roomId);
+    const sources = agvReadBroadcastSources();
+
+    const incoming = agvDefaultBroadcastSource(roomId, body);
+    const nextSource = agvMergeBroadcastSource(sources[roomId], incoming);
+
+    sources[roomId] = nextSource;
+    agvWriteBroadcastSources(sources);
+
+    return res.json({
+      ok: true,
+      service: "AGV Broadcast Source Registry",
+      pass: "SCALE-1",
+      source: nextSource,
+      message: "Broadcast source registered.",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Broadcast Source Registry",
+      pass: "SCALE-1",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+app.post("/api/broadcast/sources/status", (req, res) => {
+  try {
+    const body = req.body || {};
+    const roomId = agvNormalizeBroadcastRoomId(body.roomId);
+    const sources = agvReadBroadcastSources();
+
+    const current = sources[roomId] || agvDefaultBroadcastSource(roomId, body);
+
+    const allowedStatuses = [
+      "standby",
+      "ready",
+      "live",
+      "offline",
+      "testing",
+      "error",
+    ];
+
+    const requestedStatus =
+      agvCleanBroadcastText(body.status, current.status || "standby") ||
+      "standby";
+
+    const status = allowedStatuses.includes(requestedStatus)
+      ? requestedStatus
+      : "standby";
+
+    const nextSource = agvMergeBroadcastSource(current, {
+      status,
+      notes: agvCleanBroadcastText(body.notes, current.notes || "") || current.notes || "",
+      lastStatusMessage:
+        agvCleanBroadcastText(body.message, "") ||
+        agvCleanBroadcastText(body.lastStatusMessage, "") ||
+        "",
+    });
+
+    sources[roomId] = nextSource;
+    agvWriteBroadcastSources(sources);
+
+    return res.json({
+      ok: true,
+      service: "AGV Broadcast Source Registry",
+      pass: "SCALE-1",
+      source: nextSource,
+      message: "Broadcast source status updated.",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Broadcast Source Registry",
+      pass: "SCALE-1",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
 server.listen(PORT, () => {
   const usersFileExists = fs.existsSync(USERS_FILE);
 
