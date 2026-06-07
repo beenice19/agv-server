@@ -2174,9 +2174,11 @@ app.get("/api/broadcast/egress/health", (req, res) => {
         ? state.egressStatus || ""
         : state.egressStatus === "not-found"
           ? "not-found"
-          : state.egressStatus === "stop-error"
-            ? "stop-error"
-            : "stopped",
+          : state.egressStatus === "start-error"
+            ? "start-error"
+            : state.egressStatus === "stop-error"
+              ? "stop-error"
+              : "stopped",
     lastEgressId: state.lastEgressId || (state.status === "live" ? "" : state.egressId || ""),
     config: {
       livekitConfigured: config.livekitConfigured,
@@ -2301,15 +2303,25 @@ app.post("/api/broadcast/egress/start", async (req, res) => {
   } catch (error) {
     const message = error?.message || String(error);
 
-    agvWriteBroadcastState({
+    // PASS_BCAST4D_EGRESS_FAILURE_AUTO_ROLLBACK
+    // If LiveKit egress fails, do not leave viewers trapped in broadcast mode.
+    const next = agvWriteBroadcastState({
+      status: "off",
+      isLive: false,
+      viewerMode: "livekit",
+      egressId: "",
+      egressStatus: "start-error",
       egressError: message,
       egressUpdatedAt: new Date().toISOString(),
+      message: "Broadcast start failed. AGV returned viewers to LiveKit mode.",
     });
 
     return res.status(500).json({
       ok: false,
       service: "AGV LiveKit Egress Start",
       pass: "BCAST-4",
+      rollback: true,
+      state: next,
       error: message,
     });
   }
