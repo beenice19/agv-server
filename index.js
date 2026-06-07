@@ -2254,13 +2254,15 @@ app.post("/api/broadcast/egress/start", async (req, res) => {
       };
     }
 
-    // PASS_BCAST7_EGRESS_RECORD_AGV_LAYOUT_URL
-    // Record AGV's custom broadcast layout page instead of LiveKit's default split/composite layout.
-    const broadcastLayoutUrl = agvBuildBroadcastLayoutUrl(roomId, body);
+    // PASS_BCAST4F_RESTORE_ROOM_COMPOSITE_EGRESS
+    // Restore stable LiveKit Room Composite Egress.
+    // Web egress to AGV layout caused blank Cloudflare recordings/output on this build.
+    const layout = agvCleanBroadcastText(body.layout, "speaker-dark") || "speaker-dark";
 
-    const info = await egressClient.startWebEgress(
-      broadcastLayoutUrl,
-      output
+    const info = await egressClient.startRoomCompositeEgress(
+      roomId,
+      output,
+      layout
     );
 
     const safeInfo = agvSafeEgressSummary(info);
@@ -2286,8 +2288,8 @@ app.post("/api/broadcast/egress/start", async (req, res) => {
       egressStatus: safeInfo?.status || "started",
       egressStartedAt: new Date().toISOString(),
       egressUpdatedAt: new Date().toISOString(),
-      egressLayoutMode: "agv-web-layout",
-      egressLayoutUrl: broadcastLayoutUrl,
+      egressLayoutMode: "room-composite",
+      egressLayout: layout,
       egressError: "",
     });
 
@@ -2297,8 +2299,8 @@ app.post("/api/broadcast/egress/start", async (req, res) => {
       pass: "BCAST-4",
       state: next,
       egress: safeInfo,
-      layoutUrl: broadcastLayoutUrl,
-      note: "LiveKit web egress is recording the AGV broadcast layout page and sending it to Cloudflare RTMPS.",
+      layout,
+      note: "LiveKit room composite egress is sending the room to Cloudflare RTMPS.",
     });
   } catch (error) {
     const message = error?.message || String(error);
