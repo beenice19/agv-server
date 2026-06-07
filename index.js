@@ -2426,6 +2426,136 @@ app.post("/api/broadcast/egress/stop", async (req, res) => {
 
 
 
+
+
+// PASS_BCAST_DIRECT1_DIRECT_CLOUDFLARE_BROADCAST_MODE
+// SERVER — Direct Cloudflare Broadcast Mode.
+// This turns AGV broadcast mode on/off without starting LiveKit Egress.
+// Video source should come directly from OBS/encoder into Cloudflare RTMPS.
+// AGV viewers watch the existing Cloudflare HLS/player URL.
+
+app.get("/api/broadcast/direct/health", (req, res) => {
+  const state = agvReadBroadcastState();
+  const cf = agvCloudflareBroadcastConfig();
+
+  return res.json({
+    ok: true,
+    service: "AGV Direct Cloudflare Broadcast Mode",
+    pass: "BCAST-DIRECT-1",
+    broadcastStatus: state.status || "off",
+    isLive: Boolean(state.isLive),
+    viewerMode: state.viewerMode || "livekit",
+    provider: state.provider || "manual",
+    roomId: state.roomId || "main-hall",
+    hasPlaybackUrl: Boolean(cf.hasPlaybackUrl),
+    hlsUrlConfigured: Boolean(cf.hlsUrl),
+    embedUrlConfigured: Boolean(cf.embedUrl),
+    rtmpIngestUrlConfigured: Boolean(cf.rtmpIngestUrlConfigured),
+    streamKeyConfigured: Boolean(cf.streamKeyConfigured),
+    directMode: Boolean(state.directMode),
+    note: "Direct mode expects OBS or another encoder to send video directly to Cloudflare RTMPS.",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.post("/api/broadcast/direct/start", (req, res) => {
+  try {
+    const body = req.body || {};
+    const cf = agvCloudflareBroadcastConfig();
+
+    if (!cf.hasPlaybackUrl) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV Direct Cloudflare Broadcast Start",
+        pass: "BCAST-DIRECT-1",
+        error: "Cloudflare playback URL is not configured. Check AGV_CLOUDFLARE_EMBED_URL, AGV_CLOUDFLARE_PLAYBACK_URL, or AGV_CLOUDFLARE_HLS_URL.",
+      });
+    }
+
+    const roomId = agvCleanBroadcastText(body.roomId, "main-hall") || "main-hall";
+    const title =
+      agvCleanBroadcastText(body.title, "AGV Direct Cloudflare Broadcast") ||
+      "AGV Direct Cloudflare Broadcast";
+
+    const playback = agvChooseCloudflarePlayback(body);
+
+    const next = agvWriteBroadcastState({
+      provider: "cloudflare-direct",
+      status: "live",
+      isLive: true,
+      viewerMode: "broadcast",
+      roomId,
+      title,
+      playbackUrl: playback.playbackUrl,
+      embedUrl: playback.embedUrl,
+      hlsUrl: playback.hlsUrl,
+      message:
+        agvCleanBroadcastText(body.message, "AGV is receiving a direct Cloudflare broadcast feed.") ||
+        "AGV is receiving a direct Cloudflare broadcast feed.",
+      directMode: true,
+      egressId: "",
+      egressStatus: "not-used",
+      egressError: "",
+      egressLayoutMode: "direct-cloudflare",
+      egressUpdatedAt: new Date().toISOString(),
+      rtmpIngestUrlConfigured: Boolean(cf.rtmpIngestUrlConfigured),
+    });
+
+    return res.json({
+      ok: true,
+      service: "AGV Direct Cloudflare Broadcast Start",
+      pass: "BCAST-DIRECT-1",
+      state: next,
+      note: "AGV viewer mode is now broadcast. Send video from OBS/encoder directly to Cloudflare RTMPS.",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Direct Cloudflare Broadcast Start",
+      pass: "BCAST-DIRECT-1",
+      error: error?.message || String(error),
+    });
+  }
+});
+
+app.post("/api/broadcast/direct/stop", (req, res) => {
+  try {
+    const body = req.body || {};
+    const current = agvReadBroadcastState();
+
+    const next = agvWriteBroadcastState({
+      provider: current.provider || "cloudflare-direct",
+      status: "off",
+      isLive: false,
+      viewerMode: "livekit",
+      egressId: "",
+      egressStatus: "not-used",
+      egressError: "",
+      directMode: false,
+      egressLayoutMode: "direct-cloudflare",
+      egressUpdatedAt: new Date().toISOString(),
+      message:
+        agvCleanBroadcastText(body.message, "Direct Cloudflare broadcast mode is off.") ||
+        "Direct Cloudflare broadcast mode is off.",
+    });
+
+    return res.json({
+      ok: true,
+      service: "AGV Direct Cloudflare Broadcast Stop",
+      pass: "BCAST-DIRECT-1",
+      state: next,
+      note: "AGV viewer mode returned to LiveKit. Stop OBS/encoder separately if it is still streaming to Cloudflare.",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Direct Cloudflare Broadcast Stop",
+      pass: "BCAST-DIRECT-1",
+      error: error?.message || String(error),
+    });
+  }
+});
+
 server.listen(PORT, () => {
   const usersFileExists = fs.existsSync(USERS_FILE);
 
