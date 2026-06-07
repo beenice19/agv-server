@@ -3712,6 +3712,179 @@ app.get("/api/broadcast/bridge/health", async (req, res) => {
   }
 });
 
+
+
+// PASS_SCALE7C_BRIDGE_PREFLIGHT_ROOM_TRACK_CHECK
+// SERVER — Verify the LiveKit room has an active video source before starting egress.
+// Prevents bridge attempts that fail with "End reason: Source closed."
+
+function agvBridgeTrackKindText(track) {
+  const raw =
+    track?.type ||
+    track?.kind ||
+    track?.source ||
+    track?.trackType ||
+    track?.track_type ||
+    "";
+
+  return String(raw || "").toLowerCase();
+}
+
+function agvBridgeTrackLooksVideo(track) {
+  const text = agvBridgeTrackKindText(track);
+
+  return (
+    text.includes("video") ||
+    text.includes("camera") ||
+    text.includes("screen") ||
+    Number(track?.type) === 1 ||
+    Number(track?.source) === 1 ||
+    Number(track?.source) === 3
+  );
+}
+
+function agvBridgeTrackIsMuted(track) {
+  return Boolean(
+    track?.muted === true ||
+    track?.isMuted === true ||
+    track?.disabled === true
+  );
+}
+
+function agvBridgeParticipantName(participant) {
+  return (
+    participant?.identity ||
+    participant?.name ||
+    participant?.sid ||
+    participant?.participantIdentity ||
+    "unknown"
+  );
+}
+
+function agvBridgeNormalizeParticipants(result) {
+  if (!result) return [];
+
+  if (Array.isArray(result)) return result;
+
+  if (Array.isArray(result.participants)) return result.participants;
+  if (Array.isArray(result.items)) return result.items;
+  if (Array.isArray(result.results)) return result.results;
+
+  return [result];
+}
+
+async function agvBridgePreflightRoomTracks(config, roomId) {
+  try {
+    const sdk = require("livekit-server-sdk");
+    const RoomServiceClient = sdk.RoomServiceClient;
+
+    if (!RoomServiceClient) {
+      return {
+        ok: false,
+        checked: false,
+        roomReady: false,
+        error: "RoomServiceClient unavailable in LiveKit SDK.",
+        roomId,
+        participantCount: 0,
+        videoTrackCount: 0,
+        activeVideoTrackCount: 0,
+        note: "Could not verify LiveKit room tracks before starting bridge.",
+      };
+    }
+
+    const roomClient = new RoomServiceClient(
+      config.livekitUrl,
+      process.env.LIVEKIT_API_KEY,
+      process.env.LIVEKIT_API_SECRET
+    );
+
+    let participantsRaw = [];
+
+    try {
+      participantsRaw = await roomClient.listParticipants(roomId);
+    } catch (error) {
+      return {
+        ok: false,
+        checked: true,
+        roomReady: false,
+        error: error?.message || String(error),
+        roomId,
+        participantCount: 0,
+        videoTrackCount: 0,
+        activeVideoTrackCount: 0,
+        note: "Could not list LiveKit participants. Host may not be fully connected.",
+      };
+    }
+
+    const participants = agvBridgeNormalizeParticipants(participantsRaw);
+
+    const participantSummaries = participants.map((participant) => {
+      const tracks = Array.isArray(participant?.tracks)
+        ? participant.tracks
+        : Array.isArray(participant?.trackPublications)
+          ? participant.trackPublications
+          : [];
+
+      const videoTracks = tracks.filter(agvBridgeTrackLooksVideo);
+      const activeVideoTracks = videoTracks.filter(
+        (track) => !agvBridgeTrackIsMuted(track)
+      );
+
+      return {
+        identity: agvBridgeParticipantName(participant),
+        trackCount: tracks.length,
+        videoTrackCount: videoTracks.length,
+        activeVideoTrackCount: activeVideoTracks.length,
+        tracks: tracks.map((track) => ({
+          sid: track?.sid || track?.trackSid || "",
+          name: track?.name || "",
+          kind: track?.kind || track?.type || "",
+          source: track?.source || "",
+          muted: Boolean(track?.muted),
+        })),
+      };
+    });
+
+    const participantCount = participants.length;
+    const videoTrackCount = participantSummaries.reduce(
+      (sum, item) => sum + item.videoTrackCount,
+      0
+    );
+    const activeVideoTrackCount = participantSummaries.reduce(
+      (sum, item) => sum + item.activeVideoTrackCount,
+      0
+    );
+
+    const roomReady = participantCount > 0 && activeVideoTrackCount > 0;
+
+    return {
+      ok: roomReady,
+      checked: true,
+      roomReady,
+      roomId,
+      participantCount,
+      videoTrackCount,
+      activeVideoTrackCount,
+      participants: participantSummaries,
+      note: roomReady
+        ? "LiveKit room has at least one active video track and is ready for bridge egress."
+        : "LiveKit room is not ready. Start Host Camera, confirm a viewer can see video, then wait 5 seconds before starting bridge.",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      checked: false,
+      roomReady: false,
+      error: error?.message || String(error),
+      roomId,
+      participantCount: 0,
+      videoTrackCount: 0,
+      activeVideoTrackCount: 0,
+      note: "Bridge preflight failed before egress start.",
+    };
+  }
+}
+
 app.post("/api/broadcast/bridge/start", async (req, res) => {
   try {
     const body = req.body || {};
@@ -3757,11 +3930,26 @@ app.post("/api/broadcast/bridge/start", async (req, res) => {
       return res.status(409).json({
         ok: false,
         service: "AGV LiveKit to Cloudflare Bridge Start",
-        pass: "SCALE-7",
+        pass: "SCALE-7C",
         error:
           "LiveKit room does not exist yet. Start Host Camera first, then start the bridge.",
         roomId,
         roomCheck,
+      });
+    }
+
+    const trackPreflight = await agvBridgePreflightRoomTracks(config, roomId);
+
+    if (!trackPreflight.roomReady && !body.force) {
+      return res.status(409).json({
+        ok: false,
+        service: "AGV LiveKit to Cloudflare Bridge Start",
+        pass: "SCALE-7C",
+        error:
+          "LiveKit room is not ready for bridge egress. Start Host Camera, confirm video is visible in LiveKit viewer mode, wait 5 seconds, then start bridge.",
+        roomId,
+        roomCheck,
+        trackPreflight,
       });
     }
 
@@ -3855,11 +4043,12 @@ app.post("/api/broadcast/bridge/start", async (req, res) => {
     return res.json({
       ok: true,
       service: "AGV LiveKit to Cloudflare Bridge Start",
-      pass: "SCALE-7",
+      pass: "SCALE-7C",
       state: next,
       source,
       egress: safeInfo,
       roomCheck,
+      trackPreflight,
       note:
         "LiveKit Room Composite Egress started and is sending the room feed to Cloudflare RTMPS.",
       timestamp: new Date().toISOString(),
@@ -3883,7 +4072,7 @@ app.post("/api/broadcast/bridge/start", async (req, res) => {
     return res.status(500).json({
       ok: false,
       service: "AGV LiveKit to Cloudflare Bridge Start",
-      pass: "SCALE-7",
+      pass: "SCALE-7C",
       rollback: true,
       state: next,
       error: message,
