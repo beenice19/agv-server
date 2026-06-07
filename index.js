@@ -3978,6 +3978,315 @@ app.post("/api/broadcast/bridge/stop", async (req, res) => {
   }
 });
 
+
+
+// PASS_SCALE7B_BRIDGE_EGRESS_STATUS_TRACKER
+// SERVER — Bridge Egress Status Tracker.
+// Adds routes to inspect LiveKit egress state after bridge start.
+
+function agvBridgeStatusCleanText(value, fallback = "") {
+  if (typeof agvBridgeCleanText === "function") {
+    return agvBridgeCleanText(value, fallback);
+  }
+
+  if (typeof agvCleanBroadcastText === "function") {
+    return agvCleanBroadcastText(value, fallback);
+  }
+
+  const raw = value == null ? "" : String(value);
+  const clean = raw.trim();
+  return clean || fallback;
+}
+
+function agvBridgeGetEgressClient() {
+  const config = agvLiveKitEgressConfig();
+
+  if (!config.livekitConfigured) {
+    return {
+      client: null,
+      config,
+      error:
+        "LiveKit egress is not configured. Check LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET.",
+    };
+  }
+
+  const { EgressClient } = require("livekit-server-sdk");
+
+  return {
+    client: new EgressClient(
+      config.livekitUrl,
+      process.env.LIVEKIT_API_KEY,
+      process.env.LIVEKIT_API_SECRET
+    ),
+    config,
+    error: "",
+  };
+}
+
+function agvBridgeNormalizeEgressList(result) {
+  if (!result) return [];
+
+  if (Array.isArray(result)) return result;
+
+  if (Array.isArray(result.items)) return result.items;
+  if (Array.isArray(result.egress)) return result.egress;
+  if (Array.isArray(result.egresses)) return result.egresses;
+  if (Array.isArray(result.results)) return result.results;
+
+  return [result];
+}
+
+function agvBridgeEgressIdFromInfo(info) {
+  return (
+    info?.egressId ||
+    info?.egress_id ||
+    info?.id ||
+    info?.egress?.egressId ||
+    info?.egress?.egress_id ||
+    ""
+  );
+}
+
+function agvBridgeEgressStatusFromInfo(info) {
+  const raw =
+    info?.status ||
+    info?.egressStatus ||
+    info?.state ||
+    info?.egress?.status ||
+    "";
+
+  if (typeof raw === "number") return String(raw);
+  return String(raw || "");
+}
+
+function agvBridgeEgressErrorFromInfo(info) {
+  return (
+    info?.error ||
+    info?.errorMessage ||
+    info?.failureReason ||
+    info?.details ||
+    info?.egress?.error ||
+    ""
+  );
+}
+
+function agvBridgeEgressToApi(info) {
+  if (!info) return null;
+
+  const safe =
+    typeof agvSafeEgressSummary === "function"
+      ? agvSafeEgressSummary(info)
+      : {};
+
+  return {
+    egressId:
+      safe?.egressId ||
+      agvBridgeEgressIdFromInfo(info),
+    roomName:
+      safe?.roomName ||
+      info?.roomName ||
+      info?.room_name ||
+      info?.room?.name ||
+      "",
+    status:
+      safe?.status ||
+      agvBridgeEgressStatusFromInfo(info),
+    error:
+      agvBridgeEgressErrorFromInfo(info),
+    startedAt:
+      safe?.startedAt ||
+      info?.startedAt ||
+      info?.started_at ||
+      "",
+    updatedAt:
+      safe?.updatedAt ||
+      info?.updatedAt ||
+      info?.updated_at ||
+      "",
+    rawType: info?.constructor?.name || typeof info,
+  };
+}
+
+async function agvBridgeListEgressById(egressId) {
+  const cleanEgressId = agvBridgeStatusCleanText(egressId, "");
+
+  if (!cleanEgressId) {
+    return {
+      ok: false,
+      error: "Missing egressId.",
+      list: [],
+    };
+  }
+
+  const { client, config, error } = agvBridgeGetEgressClient();
+
+  if (!client) {
+    return {
+      ok: false,
+      error,
+      config,
+      list: [],
+    };
+  }
+
+  const attempts = [
+    async () => client.listEgress({ egressId: cleanEgressId }),
+    async () => client.listEgress({ egress_id: cleanEgressId }),
+    async () => client.listEgress(cleanEgressId),
+    async () => client.listEgress(),
+  ];
+
+  let lastError = "";
+
+  for (const attempt of attempts) {
+    try {
+      const result = await attempt();
+      const list = agvBridgeNormalizeEgressList(result);
+      const filtered = list.filter((item) => {
+        const id = agvBridgeEgressIdFromInfo(item);
+        return String(id) === String(cleanEgressId);
+      });
+
+      if (filtered.length) {
+        return {
+          ok: true,
+          error: "",
+          config,
+          list: filtered,
+          allCount: list.length,
+        };
+      }
+
+      if (list.length && attempt === attempts[3]) {
+        return {
+          ok: true,
+          error: "",
+          config,
+          list: [],
+          allCount: list.length,
+          note: "Egress ID was not found in current LiveKit egress list.",
+        };
+      }
+    } catch (err) {
+      lastError = err?.message || String(err);
+    }
+  }
+
+  return {
+    ok: false,
+    error: lastError || "Could not list LiveKit egress status.",
+    config,
+    list: [],
+  };
+}
+
+app.get("/api/broadcast/bridge/egress/current", async (req, res) => {
+  try {
+    const state = agvReadBroadcastState();
+    const egressId =
+      agvBridgeStatusCleanText(state.egressId, "") ||
+      agvBridgeStatusCleanText(state.lastEgressId, "");
+
+    if (!egressId) {
+      return res.json({
+        ok: true,
+        service: "AGV Bridge Egress Status Tracker",
+        pass: "SCALE-7B",
+        found: false,
+        egressId: "",
+        state: {
+          broadcastStatus: state.status || "off",
+          viewerMode: state.viewerMode || "livekit",
+          egressStatus: state.egressStatus || "",
+          egressError: state.egressError || "",
+          lastEgressId: state.lastEgressId || "",
+        },
+        note: "No active or last egressId is currently stored in AGV state.",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const result = await agvBridgeListEgressById(egressId);
+    const egress = result.list?.[0] ? agvBridgeEgressToApi(result.list[0]) : null;
+
+    return res.json({
+      ok: Boolean(result.ok),
+      service: "AGV Bridge Egress Status Tracker",
+      pass: "SCALE-7B",
+      found: Boolean(egress),
+      egressId,
+      egress,
+      allCount: result.allCount || 0,
+      error: result.error || "",
+      note:
+        result.note ||
+        (egress
+          ? "Current/last bridge egress status found."
+          : "Current/last bridge egress was not found in LiveKit list."),
+      state: {
+        broadcastStatus: state.status || "off",
+        viewerMode: state.viewerMode || "livekit",
+        egressStatus: state.egressStatus || "",
+        egressError: state.egressError || "",
+        lastEgressId: state.lastEgressId || "",
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Bridge Egress Status Tracker",
+      pass: "SCALE-7B",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+app.get("/api/broadcast/bridge/egress/:egressId", async (req, res) => {
+  try {
+    const egressId = agvBridgeStatusCleanText(req.params.egressId, "");
+
+    if (!egressId) {
+      return res.status(400).json({
+        ok: false,
+        service: "AGV Bridge Egress Status Tracker",
+        pass: "SCALE-7B",
+        error: "Missing egressId.",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const result = await agvBridgeListEgressById(egressId);
+    const egress = result.list?.[0] ? agvBridgeEgressToApi(result.list[0]) : null;
+
+    return res.json({
+      ok: Boolean(result.ok),
+      service: "AGV Bridge Egress Status Tracker",
+      pass: "SCALE-7B",
+      found: Boolean(egress),
+      egressId,
+      egress,
+      allCount: result.allCount || 0,
+      error: result.error || "",
+      note:
+        result.note ||
+        (egress
+          ? "Bridge egress status found."
+          : "Bridge egress was not found in LiveKit list."),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Bridge Egress Status Tracker",
+      pass: "SCALE-7B",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
 server.listen(PORT, () => {
   const usersFileExists = fs.existsSync(USERS_FILE);
 
