@@ -3495,6 +3495,489 @@ app.post("/api/broadcast/sources-db/status", async (req, res) => {
   }
 });
 
+
+
+// PASS_SCALE7_LIVEKIT_TO_CLOUDFLARE_EGRESS_BRIDGE
+// SERVER — LiveKit room to Cloudflare RTMPS bridge.
+// Adds a controlled bridge route that starts LiveKit Room Composite Egress into Cloudflare.
+// This is the source bridge: Host Camera/Screen -> LiveKit -> Cloudflare RTMPS -> AGV Viewer.
+
+function agvBridgeCleanText(value, fallback = "") {
+  if (typeof agvCleanBroadcastText === "function") {
+    return agvCleanBroadcastText(value, fallback);
+  }
+
+  const raw = value == null ? "" : String(value);
+  const clean = raw.trim();
+  return clean || fallback;
+}
+
+function agvBridgeRoomId(value) {
+  if (typeof agvNormalizeBroadcastRoomId === "function") {
+    return agvNormalizeBroadcastRoomId(value || "main-hall");
+  }
+
+  return agvBridgeCleanText(value, "main-hall") || "main-hall";
+}
+
+function agvBridgeEgressLayout(value) {
+  const clean = agvBridgeCleanText(value, "speaker-dark") || "speaker-dark";
+  const allowed = new Set([
+    "speaker",
+    "speaker-dark",
+    "grid",
+    "grid-dark",
+    "screen-share",
+    "screen-share-dark",
+  ]);
+
+  return allowed.has(clean) ? clean : "speaker-dark";
+}
+
+async function agvBridgeGetSupabaseSource(roomId) {
+  try {
+    if (
+      typeof agvSupabaseBroadcastConfig !== "function" ||
+      typeof agvGetSupabaseBroadcastClient !== "function" ||
+      typeof agvBroadcastSourceRowToApi !== "function"
+    ) {
+      return null;
+    }
+
+    const dbConfig = agvSupabaseBroadcastConfig();
+    const dbClient = agvGetSupabaseBroadcastClient();
+
+    if (!dbClient || !dbConfig?.table) return null;
+
+    const { data, error } = await dbClient
+      .from(dbConfig.table)
+      .select("*")
+      .eq("room_id", roomId)
+      .maybeSingle();
+
+    if (error || !data) return null;
+
+    return agvBroadcastSourceRowToApi(data);
+  } catch {
+    return null;
+  }
+}
+
+async function agvBridgeUpdateSupabaseSource(roomId, status, message = "") {
+  try {
+    if (
+      typeof agvSupabaseBroadcastConfig !== "function" ||
+      typeof agvGetSupabaseBroadcastClient !== "function" ||
+      typeof agvBroadcastSourceRowToApi !== "function"
+    ) {
+      return null;
+    }
+
+    const dbConfig = agvSupabaseBroadcastConfig();
+    const dbClient = agvGetSupabaseBroadcastClient();
+
+    if (!dbClient || !dbConfig?.table) return null;
+
+    const { data, error } = await dbClient
+      .from(dbConfig.table)
+      .update({
+        status,
+        last_status_message: agvBridgeCleanText(message, ""),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("room_id", roomId)
+      .select("*")
+      .maybeSingle();
+
+    if (error || !data) return null;
+
+    return agvBroadcastSourceRowToApi(data);
+  } catch {
+    return null;
+  }
+}
+
+async function agvBridgeCheckLiveKitRoom(config, roomId) {
+  try {
+    const sdk = require("livekit-server-sdk");
+    const RoomServiceClient = sdk.RoomServiceClient;
+
+    if (!RoomServiceClient) {
+      return {
+        checked: false,
+        exists: false,
+        note: "RoomServiceClient unavailable in SDK; egress start will be the room existence check.",
+      };
+    }
+
+    const roomClient = new RoomServiceClient(
+      config.livekitUrl,
+      process.env.LIVEKIT_API_KEY,
+      process.env.LIVEKIT_API_SECRET
+    );
+
+    let rooms = [];
+
+    try {
+      rooms = await roomClient.listRooms([roomId]);
+    } catch {
+      rooms = await roomClient.listRooms();
+    }
+
+    const list = Array.isArray(rooms) ? rooms : [];
+    const found = list.some((room) => {
+      const name = room?.name || room?.room?.name || room?.roomName || "";
+      return String(name) === String(roomId);
+    });
+
+    return {
+      checked: true,
+      exists: found,
+      count: list.length,
+      note: found
+        ? "LiveKit room exists."
+        : "LiveKit room was not found. Host must join/start camera before bridge start.",
+    };
+  } catch (error) {
+    return {
+      checked: false,
+      exists: false,
+      error: error?.message || String(error),
+      note: "Room check failed; egress start will still report the final result.",
+    };
+  }
+}
+
+async function agvBridgeStartRoomCompositeEgress(egressClient, roomId, output, layout) {
+  const attempts = [
+    async () => egressClient.startRoomCompositeEgress(roomId, output, { layout }),
+    async () => egressClient.startRoomCompositeEgress(roomId, output, layout),
+    async () => egressClient.startRoomCompositeEgress(roomId, output),
+  ];
+
+  let lastError = null;
+
+  for (const attempt of attempts) {
+    try {
+      return await attempt();
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error("LiveKit Room Composite Egress could not start.");
+}
+
+app.get("/api/broadcast/bridge/health", async (req, res) => {
+  try {
+    const state = agvReadBroadcastState();
+    const config = agvLiveKitEgressConfig();
+    const cf = agvCloudflareBroadcastConfig();
+
+    return res.json({
+      ok: true,
+      service: "AGV LiveKit to Cloudflare Egress Bridge",
+      pass: "SCALE-7",
+      bridgeReady:
+        Boolean(config.livekitConfigured) &&
+        Boolean(cf.rtmpIngestUrlConfigured) &&
+        Boolean(cf.streamKeyConfigured),
+      broadcastStatus: state.status || "off",
+      viewerMode: state.viewerMode || "livekit",
+      roomId: state.roomId || "main-hall",
+      egressId: state.egressId || "",
+      egressStatus: state.egressStatus || "",
+      egressLayoutMode: state.egressLayoutMode || "",
+      egressLayout: state.egressLayout || "",
+      sourceRegistryType: state.sourceRegistryType || "",
+      supabaseSourceUsed: Boolean(state.supabaseSourceUsed),
+      config: {
+        livekitConfigured: Boolean(config.livekitConfigured),
+        cloudflareRtmpConfigured: Boolean(cf.rtmpIngestUrlConfigured),
+        cloudflareStreamKeyConfigured: Boolean(cf.streamKeyConfigured),
+        cloudflarePlaybackConfigured: Boolean(cf.hasPlaybackUrl),
+      },
+      note:
+        "Bridge expects the host to already be live in the LiveKit room before starting egress.",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV LiveKit to Cloudflare Egress Bridge",
+      pass: "SCALE-7",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+app.post("/api/broadcast/bridge/start", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const roomId = agvBridgeRoomId(body.roomId || "main-hall");
+    const title =
+      agvBridgeCleanText(body.title, "AGV LiveKit to Cloudflare Broadcast") ||
+      "AGV LiveKit to Cloudflare Broadcast";
+    const message =
+      agvBridgeCleanText(
+        body.message,
+        "AGV is bridging the LiveKit room to Cloudflare."
+      ) || "AGV is bridging the LiveKit room to Cloudflare.";
+    const layout = agvBridgeEgressLayout(body.layout || "speaker-dark");
+
+    const config = agvLiveKitEgressConfig();
+    const cf = agvCloudflareBroadcastConfig();
+
+    if (!config.livekitConfigured) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV LiveKit to Cloudflare Bridge Start",
+        pass: "SCALE-7",
+        error:
+          "LiveKit egress is not configured. Check LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET.",
+        roomId,
+      });
+    }
+
+    if (!cf.rtmpIngestUrlConfigured || !cf.streamKeyConfigured) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV LiveKit to Cloudflare Bridge Start",
+        pass: "SCALE-7",
+        error:
+          "Cloudflare RTMPS is not configured. Check AGV_CLOUDFLARE_RTMP_INGEST_URL and AGV_CLOUDFLARE_STREAM_KEY.",
+        roomId,
+      });
+    }
+
+    const roomCheck = await agvBridgeCheckLiveKitRoom(config, roomId);
+
+    if (roomCheck.checked && !roomCheck.exists && !body.force) {
+      return res.status(409).json({
+        ok: false,
+        service: "AGV LiveKit to Cloudflare Bridge Start",
+        pass: "SCALE-7",
+        error:
+          "LiveKit room does not exist yet. Start Host Camera first, then start the bridge.",
+        roomId,
+        roomCheck,
+      });
+    }
+
+    const streamUrl = agvCloudflareRtmpStreamUrl();
+
+    if (!streamUrl) {
+      return res.status(500).json({
+        ok: false,
+        service: "AGV LiveKit to Cloudflare Bridge Start",
+        pass: "SCALE-7",
+        error: "Could not build Cloudflare RTMPS stream URL.",
+        roomId,
+      });
+    }
+
+    const {
+      EgressClient,
+      StreamOutput,
+      StreamProtocol,
+    } = require("livekit-server-sdk");
+
+    const egressClient = new EgressClient(
+      config.livekitUrl,
+      process.env.LIVEKIT_API_KEY,
+      process.env.LIVEKIT_API_SECRET
+    );
+
+    let output;
+
+    try {
+      output = new StreamOutput({
+        protocol: StreamProtocol.RTMP,
+        urls: [streamUrl],
+      });
+    } catch {
+      output = {
+        protocol: StreamProtocol.RTMP,
+        urls: [streamUrl],
+      };
+    }
+
+    const info = await agvBridgeStartRoomCompositeEgress(
+      egressClient,
+      roomId,
+      output,
+      layout
+    );
+
+    const safeInfo = agvSafeEgressSummary(info);
+    const egressId =
+      safeInfo?.egressId ||
+      info?.egressId ||
+      info?.egress_id ||
+      info?.id ||
+      "";
+
+    const playback = agvChooseCloudflarePlayback(body);
+    const source = await agvBridgeUpdateSupabaseSource(roomId, "live", message);
+
+    const next = agvWriteBroadcastState({
+      provider: "cloudflare-bridge",
+      status: "live",
+      isLive: true,
+      viewerMode: "broadcast",
+      roomId,
+      eventId: source?.eventId || body.eventId || "",
+      title,
+      sourceName: source?.sourceName || "AGV LiveKit Bridge Source",
+      sourceType: "livekit-egress-rtmps",
+      playbackUrl: playback.playbackUrl || source?.playbackUrl || "",
+      embedUrl: playback.embedUrl || source?.embedUrl || "",
+      hlsUrl: playback.hlsUrl || source?.hlsUrl || "",
+      message,
+      directMode: false,
+      bridgeMode: true,
+      sourceRegistryConnected: Boolean(source),
+      sourceRegistryType: source ? "supabase" : "",
+      supabaseSourceUsed: Boolean(source),
+      supabaseSourceUpdated: Boolean(source),
+      egressId,
+      egressStatus: safeInfo?.status || "started",
+      egressError: "",
+      egressLayoutMode: "room-composite",
+      egressLayout: layout,
+      egressStartedAt: new Date().toISOString(),
+      egressUpdatedAt: new Date().toISOString(),
+      rtmpIngestUrlConfigured: true,
+      streamKeyConfigured: true,
+    });
+
+    return res.json({
+      ok: true,
+      service: "AGV LiveKit to Cloudflare Bridge Start",
+      pass: "SCALE-7",
+      state: next,
+      source,
+      egress: safeInfo,
+      roomCheck,
+      note:
+        "LiveKit Room Composite Egress started and is sending the room feed to Cloudflare RTMPS.",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    const message = error?.message || String(error);
+
+    const next = agvWriteBroadcastState({
+      status: "off",
+      isLive: false,
+      viewerMode: "livekit",
+      bridgeMode: false,
+      egressId: "",
+      egressStatus: "bridge-start-error",
+      egressError: message,
+      egressUpdatedAt: new Date().toISOString(),
+      message:
+        "LiveKit to Cloudflare bridge failed. AGV returned viewers to LiveKit mode.",
+    });
+
+    return res.status(500).json({
+      ok: false,
+      service: "AGV LiveKit to Cloudflare Bridge Start",
+      pass: "SCALE-7",
+      rollback: true,
+      state: next,
+      error: message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+app.post("/api/broadcast/bridge/stop", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const current = agvReadBroadcastState();
+    const roomId = agvBridgeRoomId(body.roomId || current.roomId || "main-hall");
+    const egressId =
+      agvBridgeCleanText(body.egressId, "") ||
+      agvBridgeCleanText(current.egressId, "");
+
+    const config = agvLiveKitEgressConfig();
+    let stopError = "";
+    let stopped = false;
+
+    if (egressId && config.livekitConfigured) {
+      try {
+        const { EgressClient } = require("livekit-server-sdk");
+        const egressClient = new EgressClient(
+          config.livekitUrl,
+          process.env.LIVEKIT_API_KEY,
+          process.env.LIVEKIT_API_SECRET
+        );
+
+        await egressClient.stopEgress(egressId);
+        stopped = true;
+      } catch (error) {
+        stopError = error?.message || String(error);
+      }
+    }
+
+    const stopMessage =
+      agvBridgeCleanText(
+        body.message,
+        "LiveKit to Cloudflare bridge stopped."
+      ) || "LiveKit to Cloudflare bridge stopped.";
+
+    const source = await agvBridgeUpdateSupabaseSource(
+      roomId,
+      "standby",
+      stopMessage
+    );
+
+    const next = agvWriteBroadcastState({
+      provider: current.provider || "cloudflare-bridge",
+      status: "off",
+      isLive: false,
+      viewerMode: "livekit",
+      roomId,
+      directMode: false,
+      bridgeMode: false,
+      sourceRegistryConnected: Boolean(source),
+      sourceRegistryType: source ? "supabase" : "",
+      supabaseSourceUsed: Boolean(source),
+      supabaseSourceUpdated: Boolean(source),
+      egressId: "",
+      lastEgressId: egressId || current.lastEgressId || "",
+      egressStatus: stopError ? "bridge-stop-warning" : stopped ? "stopped" : "not-used",
+      egressError: stopError,
+      egressLayoutMode: "room-composite",
+      egressUpdatedAt: new Date().toISOString(),
+      message: stopMessage,
+    });
+
+    return res.json({
+      ok: true,
+      service: "AGV LiveKit to Cloudflare Bridge Stop",
+      pass: "SCALE-7",
+      state: next,
+      source,
+      stopped,
+      stopError,
+      note: stopError
+        ? "AGV returned viewers to LiveKit, but LiveKit egress stop reported a warning."
+        : "AGV stopped the LiveKit to Cloudflare bridge and returned viewers to LiveKit.",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV LiveKit to Cloudflare Bridge Stop",
+      pass: "SCALE-7",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
 server.listen(PORT, () => {
   const usersFileExists = fs.existsSync(USERS_FILE);
 
