@@ -4476,6 +4476,235 @@ app.get("/api/broadcast/bridge/egress/:egressId", async (req, res) => {
   }
 });
 
+
+
+// PASS_SCALE8B_CLOUDFLARE_PLAYBACK_URL_VERIFY
+// SERVER — Verify Cloudflare playback URLs before relying on broadcast viewer mode.
+
+function agvPlaybackVerifyCleanText(value, fallback = "") {
+  const raw = value == null ? "" : String(value);
+  const clean = raw.trim();
+  return clean || fallback;
+}
+
+function agvPlaybackVerifyRoomId(value) {
+  if (typeof agvNormalizeBroadcastRoomId === "function") {
+    return agvNormalizeBroadcastRoomId(value || "main-hall");
+  }
+
+  return agvPlaybackVerifyCleanText(value, "main-hall") || "main-hall";
+}
+
+function agvPlaybackVerifyCloudflareEmbedFromHls(url) {
+  const raw = agvPlaybackVerifyCleanText(url, "");
+
+  if (!raw) return "";
+
+  try {
+    const parsed = new URL(raw);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+
+    if (
+      parsed.hostname.includes("cloudflarestream.com") &&
+      parts.length >= 3 &&
+      parts[1] === "manifest" &&
+      parts[2] === "video.m3u8"
+    ) {
+      return parsed.origin + "/" + parts[0] + "/iframe";
+    }
+  } catch {}
+
+  return "";
+}
+
+async function agvPlaybackVerifyFetch(url, method = "HEAD") {
+  const raw = agvPlaybackVerifyCleanText(url, "");
+
+  if (!raw) {
+    return {
+      ok: false,
+      checked: false,
+      url: "",
+      method,
+      status: 0,
+      statusText: "",
+      error: "Missing URL.",
+    };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+
+    let response;
+    try {
+      response = await fetch(raw, {
+        method,
+        redirect: "follow",
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (method === "HEAD") {
+        clearTimeout(timer);
+        return agvPlaybackVerifyFetch(raw, "GET");
+      }
+
+      throw error;
+    }
+
+    clearTimeout(timer);
+
+    return {
+      ok: Boolean(response.ok),
+      checked: true,
+      url: raw,
+      method,
+      status: response.status,
+      statusText: response.statusText || "",
+      contentType: response.headers.get("content-type") || "",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      checked: true,
+      url: raw,
+      method,
+      status: 0,
+      statusText: "",
+      error: error?.message || String(error),
+    };
+  }
+}
+
+async function agvPlaybackVerifyGetSource(roomId) {
+  try {
+    if (typeof agvBridgeGetSupabaseSource === "function") {
+      const source = await agvBridgeGetSupabaseSource(roomId);
+      if (source) return source;
+    }
+  } catch {}
+
+  try {
+    if (typeof agvReadBroadcastSources === "function") {
+      const list = agvReadBroadcastSources();
+      const found = Array.isArray(list)
+        ? list.find((item) => String(item.roomId || "") === String(roomId))
+        : null;
+      if (found) return found;
+    }
+  } catch {}
+
+  return null;
+}
+
+async function agvPlaybackVerifyBuildReport(roomIdInput) {
+  const roomId = agvPlaybackVerifyRoomId(roomIdInput || "main-hall");
+  const state = agvReadBroadcastState();
+  const cf = agvCloudflareBroadcastConfig();
+  const source = await agvPlaybackVerifyGetSource(roomId);
+
+  const stateHls = agvPlaybackVerifyCleanText(state.hlsUrl, "");
+  const sourceHls = agvPlaybackVerifyCleanText(source?.hlsUrl, "");
+  const cfHls = agvPlaybackVerifyCleanText(cf.hlsUrl, "");
+
+  const hlsUrl = stateHls || sourceHls || cfHls;
+  const embedUrl =
+    agvPlaybackVerifyCleanText(state.embedUrl, "") ||
+    agvPlaybackVerifyCleanText(source?.embedUrl, "") ||
+    agvPlaybackVerifyCleanText(cf.embedUrl, "") ||
+    agvPlaybackVerifyCloudflareEmbedFromHls(hlsUrl);
+
+  const playbackUrl =
+    agvPlaybackVerifyCleanText(state.playbackUrl, "") ||
+    agvPlaybackVerifyCleanText(source?.playbackUrl, "") ||
+    embedUrl ||
+    hlsUrl;
+
+  const hlsCheck = await agvPlaybackVerifyFetch(hlsUrl, "HEAD");
+  const embedCheck = embedUrl
+    ? await agvPlaybackVerifyFetch(embedUrl, "HEAD")
+    : {
+        ok: false,
+        checked: false,
+        url: "",
+        method: "HEAD",
+        status: 0,
+        statusText: "",
+        error: "No embed URL available.",
+      };
+
+  const playbackReady = Boolean(hlsCheck.ok || embedCheck.ok);
+
+  return {
+    ok: true,
+    service: "AGV Cloudflare Playback URL Verification",
+    pass: "SCALE-8B-A",
+    roomId,
+    playbackReady,
+    viewerMode: state.viewerMode || "livekit",
+    broadcastStatus: state.status || "off",
+    bridgeMode: Boolean(state.bridgeMode),
+    directMode: Boolean(state.directMode),
+    sourceStatus: source?.status || "",
+    provider: state.provider || source?.provider || "",
+    urls: {
+      hlsUrl,
+      embedUrl,
+      playbackUrl,
+      hlsConfigured: Boolean(hlsUrl),
+      embedConfigured: Boolean(embedUrl),
+      playbackConfigured: Boolean(playbackUrl),
+    },
+    checks: {
+      hls: hlsCheck,
+      embed: embedCheck,
+    },
+    source: source
+      ? {
+          roomId: source.roomId || "",
+          sourceName: source.sourceName || "",
+          sourceType: source.sourceType || "",
+          status: source.status || "",
+          hasPlaybackUrl: Boolean(source.hasPlaybackUrl || source.hlsUrl || source.embedUrl || source.playbackUrl),
+        }
+      : null,
+    note: playbackReady
+      ? "Cloudflare playback URL responded. Viewer can attempt broadcast playback."
+      : "Cloudflare playback URL is not responding yet. Keep viewer in waiting screen or LiveKit mode.",
+    timestamp: new Date().toISOString(),
+  };
+}
+
+app.get("/api/broadcast/playback/verify", async (req, res) => {
+  try {
+    const report = await agvPlaybackVerifyBuildReport(req.query?.roomId || "main-hall");
+    return res.json(report);
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Cloudflare Playback URL Verification",
+      pass: "SCALE-8B-A",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+app.post("/api/broadcast/playback/verify", async (req, res) => {
+  try {
+    const report = await agvPlaybackVerifyBuildReport(req.body?.roomId || "main-hall");
+    return res.json(report);
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Cloudflare Playback URL Verification",
+      pass: "SCALE-8B-A",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
 server.listen(PORT, () => {
   const usersFileExists = fs.existsSync(USERS_FILE);
 
