@@ -4705,6 +4705,192 @@ app.post("/api/broadcast/playback/verify", async (req, res) => {
   }
 });
 
+
+
+// PASS_SCALE8D_CLOUDFLARE_LIVE_INPUT_PLAYBACK_DEBUG
+// SERVER — Debug Cloudflare playback chain without claiming video frames are visible.
+// This separates: URL ready, source live, egress active, viewer broadcast, and actual browser video visibility.
+
+function agvPlaybackDebugCleanText(value, fallback = "") {
+  const raw = value == null ? "" : String(value);
+  const clean = raw.trim();
+  return clean || fallback;
+}
+
+function agvPlaybackDebugBool(value) {
+  return Boolean(value === true || value === "true" || value === 1 || value === "1");
+}
+
+async function agvPlaybackDebugGetCurrentEgress() {
+  try {
+    const state = agvReadBroadcastState();
+    const egressId =
+      agvPlaybackDebugCleanText(state.egressId, "") ||
+      agvPlaybackDebugCleanText(state.lastEgressId, "");
+
+    if (!egressId) {
+      return {
+        checked: true,
+        found: false,
+        egressId: "",
+        status: "",
+        error: "",
+        note: "No current egressId is stored.",
+      };
+    }
+
+    if (typeof agvBridgeListEgressById !== "function") {
+      return {
+        checked: false,
+        found: false,
+        egressId,
+        status: "",
+        error: "agvBridgeListEgressById is unavailable.",
+        note: "SCALE-7B egress tracker helper was not available.",
+      };
+    }
+
+    const result = await agvBridgeListEgressById(egressId);
+    const info = result?.list?.[0] || null;
+    const api =
+      info && typeof agvBridgeEgressToApi === "function"
+        ? agvBridgeEgressToApi(info)
+        : null;
+
+    return {
+      checked: true,
+      found: Boolean(api),
+      egressId,
+      status: api?.status || "",
+      error: api?.error || result?.error || "",
+      roomName: api?.roomName || "",
+      startedAt: api?.startedAt || "",
+      updatedAt: api?.updatedAt || "",
+      rawType: api?.rawType || "",
+      allCount: result?.allCount || 0,
+      note: api
+        ? "Current bridge egress was found."
+        : result?.note || "Current bridge egress was not found.",
+    };
+  } catch (error) {
+    return {
+      checked: false,
+      found: false,
+      egressId: "",
+      status: "",
+      error: error?.message || String(error),
+      note: "Could not inspect current bridge egress.",
+    };
+  }
+}
+
+function agvPlaybackDebugInterpret(report, egress) {
+  const viewerBroadcast = report.viewerMode === "broadcast";
+  const sourceLive = report.sourceStatus === "live";
+  const broadcastLive = report.broadcastStatus === "live";
+  const urlReady = Boolean(report.playbackReady);
+  const egressFound = Boolean(egress?.found);
+  const egressError = agvPlaybackDebugCleanText(egress?.error, "");
+  const egressStatusText = String(egress?.status || "");
+  const egressActive =
+    egressFound &&
+    !egressError &&
+    egressStatusText !== "3" &&
+    !egressStatusText.toLowerCase().includes("complete") &&
+    !egressStatusText.toLowerCase().includes("failed") &&
+    !egressStatusText.toLowerCase().includes("ended");
+
+  const chainReady = Boolean(urlReady && viewerBroadcast && sourceLive && broadcastLive);
+  const bridgeLikelyActive = Boolean(chainReady && egressActive);
+
+  const blockers = [];
+
+  if (!urlReady) blockers.push("Cloudflare playback URL did not verify as ready.");
+  if (!sourceLive) blockers.push("Supabase source is not live.");
+  if (!viewerBroadcast) blockers.push("AGV viewer mode is not broadcast.");
+  if (!broadcastLive) blockers.push("AGV broadcast state is not live.");
+  if (!egressFound && viewerBroadcast) blockers.push("No current LiveKit egress was found.");
+  if (egressError) blockers.push("LiveKit egress error: " + egressError);
+
+  return {
+    urlReady,
+    sourceLive,
+    viewerBroadcast,
+    broadcastLive,
+    egressFound,
+    egressActive,
+    chainReady,
+    bridgeLikelyActive,
+    browserVideoConfirmed: false,
+    browserVideoConfirmedNote:
+      "Server can verify URL, source, state, and egress. Only the browser/player can confirm visible video frames.",
+    blockers,
+    recommendation:
+      blockers.length === 0
+        ? "Server-side chain looks ready. If viewer is blank, inspect Cloudflare dashboard preview or browser player events."
+        : "Fix the listed blockers before expecting visible Cloudflare playback.",
+  };
+}
+
+app.get("/api/broadcast/playback/debug", async (req, res) => {
+  try {
+    const roomId = req.query?.roomId || "main-hall";
+    const report = await agvPlaybackVerifyBuildReport(roomId);
+    const egress = await agvPlaybackDebugGetCurrentEgress();
+    const interpretation = agvPlaybackDebugInterpret(report, egress);
+    const state = agvReadBroadcastState();
+
+    return res.json({
+      ok: true,
+      service: "AGV Cloudflare Live Input Playback Debug",
+      pass: "SCALE-8D-A",
+      roomId: report.roomId || roomId,
+      summary: {
+        playbackReady: Boolean(report.playbackReady),
+        player: report.urls?.embedConfigured ? "Cloudflare iframe" : "HLS fallback",
+        viewerMode: report.viewerMode || "",
+        broadcastStatus: report.broadcastStatus || "",
+        sourceStatus: report.sourceStatus || "",
+        bridgeMode: Boolean(report.bridgeMode),
+        directMode: Boolean(report.directMode),
+        egressFound: Boolean(egress.found),
+        egressActive: Boolean(interpretation.egressActive),
+        serverChainReady: Boolean(interpretation.chainReady),
+        browserVideoConfirmed: false,
+      },
+      interpretation,
+      urls: report.urls || {},
+      checks: report.checks || {},
+      egress,
+      state: {
+        provider: state.provider || "",
+        roomId: state.roomId || "",
+        title: state.title || "",
+        egressId: state.egressId || "",
+        lastEgressId: state.lastEgressId || "",
+        egressStatus: state.egressStatus || "",
+        egressError: state.egressError || "",
+        egressLayoutMode: state.egressLayoutMode || "",
+        egressLayout: state.egressLayout || "",
+        message: state.message || "",
+        updatedAt: state.updatedAt || "",
+      },
+      source: report.source || null,
+      note:
+        "URL ready does not guarantee video frames are visible. Browser/player events or Cloudflare dashboard preview are required to confirm visible video.",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      service: "AGV Cloudflare Live Input Playback Debug",
+      pass: "SCALE-8D-A",
+      error: error?.message || String(error),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
 server.listen(PORT, () => {
   const usersFileExists = fs.existsSync(USERS_FILE);
 
