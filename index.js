@@ -2288,8 +2288,11 @@ app.post("/api/broadcast/egress/start", async (req, res) => {
       egressStatus: safeInfo?.status || "started",
       egressStartedAt: new Date().toISOString(),
       egressUpdatedAt: new Date().toISOString(),
-      egressLayoutMode: "room-composite",
-      egressLayout: layout,
+      egressLayoutMode: "host-track-composite",
+      egressLayout: "host-track",
+      selectedVideoTrackId: selectedTracks.videoTrackId,
+      selectedAudioTrackId: selectedTracks.audioTrackId,
+      selectedVideoParticipant: selectedTracks.videoParticipant,
       egressError: "",
     });
 
@@ -3991,11 +3994,26 @@ app.post("/api/broadcast/bridge/start", async (req, res) => {
       };
     }
 
-    const info = await agvBridgeStartRoomCompositeEgress(
+    const selectedTracks = agvExchangeSelectHostTracks(trackPreflight);
+
+    if (!selectedTracks.videoTrackId && !body.force) {
+      return res.status(409).json({
+        ok: false,
+        service: "AGV Cloudflare Exchange Start",
+        pass: "SCALE-11",
+        error:
+          "No active host video track ID was found. Start Host Camera, confirm the viewer can see video in LiveKit mode, wait 5 seconds, then go live again.",
+        roomId,
+        trackPreflight,
+        selectedTracks,
+      });
+    }
+
+    const info = await agvExchangeStartHostTrackEgress(
       egressClient,
       roomId,
       output,
-      layout
+      selectedTracks
     );
 
     const safeInfo = agvSafeEgressSummary(info);
@@ -4018,7 +4036,7 @@ app.post("/api/broadcast/bridge/start", async (req, res) => {
       eventId: source?.eventId || body.eventId || "",
       title,
       sourceName: source?.sourceName || "AGV LiveKit Bridge Source",
-      sourceType: "livekit-egress-rtmps",
+      sourceType: "livekit-host-track-rtmps",
       playbackUrl: playback.playbackUrl || source?.playbackUrl || "",
       embedUrl: playback.embedUrl || source?.embedUrl || "",
       hlsUrl: playback.hlsUrl || source?.hlsUrl || "",
@@ -4138,7 +4156,7 @@ app.post("/api/broadcast/bridge/stop", async (req, res) => {
       lastEgressId: egressId || current.lastEgressId || "",
       egressStatus: stopError ? "bridge-stop-warning" : stopped ? "stopped" : "not-used",
       egressError: stopError,
-      egressLayoutMode: "room-composite",
+      egressLayoutMode: "host-track-composite",
       egressUpdatedAt: new Date().toISOString(),
       message: stopMessage,
     });
@@ -5008,7 +5026,7 @@ async function agvExchangeBuildStatus(roomIdInput = "main-hall") {
   return {
     ok: true,
     service: "AGV One-Button Cloudflare Exchange Mode",
-    pass: "SCALE-10A",
+    pass: "SCALE-11",
     roomId,
     exchangeReady: Boolean(playback.playbackReady),
     exchangeLive: Boolean(sourceLive && viewerBroadcast && broadcastLive),
@@ -5039,6 +5057,137 @@ async function agvExchangeBuildStatus(roomIdInput = "main-hall") {
   };
 }
 
+
+// PASS_SCALE11_HOST_TRACK_TO_CLOUDFLARE_RTMPS_EXCHANGE
+// SERVER — Use the active host video track as the Cloudflare RTMPS source.
+// This avoids depending on LiveKit room-composite layout rendering for the first visible Cloudflare proof.
+
+function agvExchangeTrackText(value) {
+  return String(value == null ? "" : value).toLowerCase();
+}
+
+function agvExchangeTrackLooksVideo(track) {
+  const text =
+    agvExchangeTrackText(track?.kind) +
+    " " +
+    agvExchangeTrackText(track?.source) +
+    " " +
+    agvExchangeTrackText(track?.name);
+
+  return (
+    text.includes("video") ||
+    text.includes("camera") ||
+    text.includes("screen") ||
+    String(track?.kind || "") === "1" ||
+    String(track?.source || "") === "1" ||
+    String(track?.source || "") === "3"
+  );
+}
+
+function agvExchangeTrackLooksAudio(track) {
+  const text =
+    agvExchangeTrackText(track?.kind) +
+    " " +
+    agvExchangeTrackText(track?.source) +
+    " " +
+    agvExchangeTrackText(track?.name);
+
+  return (
+    text.includes("audio") ||
+    text.includes("microphone") ||
+    String(track?.kind || "") === "0" ||
+    String(track?.source || "") === "2"
+  );
+}
+
+function agvExchangeSelectHostTracks(trackPreflight) {
+  const participants = Array.isArray(trackPreflight?.participants)
+    ? trackPreflight.participants
+    : [];
+
+  const allTracks = [];
+
+  for (const participant of participants) {
+    const tracks = Array.isArray(participant?.tracks) ? participant.tracks : [];
+
+    for (const track of tracks) {
+      allTracks.push({
+        participantIdentity: participant?.identity || "",
+        sid: track?.sid || track?.trackSid || track?.track_sid || "",
+        name: track?.name || "",
+        kind: track?.kind || "",
+        source: track?.source || "",
+        muted: Boolean(track?.muted),
+        raw: track,
+      });
+    }
+  }
+
+  const activeVideo =
+    allTracks.find((track) => track.sid && !track.muted && agvExchangeTrackLooksVideo(track)) ||
+    allTracks.find((track) => track.sid && agvExchangeTrackLooksVideo(track));
+
+  const activeAudio =
+    allTracks.find((track) => track.sid && !track.muted && agvExchangeTrackLooksAudio(track)) ||
+    allTracks.find((track) => track.sid && agvExchangeTrackLooksAudio(track));
+
+  return {
+    videoTrackId: activeVideo?.sid || "",
+    audioTrackId: activeAudio?.sid || "",
+    videoParticipant: activeVideo?.participantIdentity || "",
+    audioParticipant: activeAudio?.participantIdentity || "",
+    videoTrackName: activeVideo?.name || "",
+    audioTrackName: activeAudio?.name || "",
+    trackCount: allTracks.length,
+    tracks: allTracks.map((track) => ({
+      participantIdentity: track.participantIdentity,
+      sid: track.sid,
+      name: track.name,
+      kind: track.kind,
+      source: track.source,
+      muted: track.muted,
+    })),
+  };
+}
+
+async function agvExchangeStartHostTrackEgress(egressClient, roomId, output, selectedTracks) {
+  const videoTrackId = selectedTracks?.videoTrackId || "";
+  const audioTrackId = selectedTracks?.audioTrackId || "";
+
+  if (!videoTrackId) {
+    throw new Error("No active host video track ID was available for Track Composite Egress.");
+  }
+
+  const attempts = [
+    async () =>
+      egressClient.startTrackCompositeEgress(roomId, output, {
+        videoTrackId,
+        audioTrackId,
+      }),
+    async () =>
+      egressClient.startTrackCompositeEgress(
+        roomId,
+        output,
+        audioTrackId || "",
+        videoTrackId
+      ),
+    async () =>
+      egressClient.startTrackCompositeEgress(roomId, output, "", videoTrackId),
+  ];
+
+  let lastError = null;
+
+  for (const attempt of attempts) {
+    try {
+      return await attempt();
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error("LiveKit host track egress could not start.");
+}
+
 app.get("/api/broadcast/exchange/status", async (req, res) => {
   try {
     const report = await agvExchangeBuildStatus(req.query?.roomId || "main-hall");
@@ -5047,7 +5196,7 @@ app.get("/api/broadcast/exchange/status", async (req, res) => {
     return res.status(500).json({
       ok: false,
       service: "AGV One-Button Cloudflare Exchange Mode",
-      pass: "SCALE-10A",
+      pass: "SCALE-11",
       error: error?.message || String(error),
       timestamp: new Date().toISOString(),
     });
@@ -5075,7 +5224,7 @@ app.post("/api/broadcast/exchange/start", async (req, res) => {
       return res.status(500).json({
         ok: false,
         service: "AGV Cloudflare Exchange Start",
-        pass: "SCALE-10A",
+        pass: "SCALE-11",
         error:
           "LiveKit is not configured. Check LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET.",
         roomId,
@@ -5086,7 +5235,7 @@ app.post("/api/broadcast/exchange/start", async (req, res) => {
       return res.status(500).json({
         ok: false,
         service: "AGV Cloudflare Exchange Start",
-        pass: "SCALE-10A",
+        pass: "SCALE-11",
         error:
           "Cloudflare RTMPS is not configured. Check AGV_CLOUDFLARE_RTMP_INGEST_URL and AGV_CLOUDFLARE_STREAM_KEY.",
         roomId,
@@ -5099,7 +5248,7 @@ app.post("/api/broadcast/exchange/start", async (req, res) => {
       return res.status(409).json({
         ok: false,
         service: "AGV Cloudflare Exchange Start",
-        pass: "SCALE-10A",
+        pass: "SCALE-11",
         error:
           "Cloudflare playback URL is not ready. Verify playback before going live.",
         roomId,
@@ -5113,7 +5262,7 @@ app.post("/api/broadcast/exchange/start", async (req, res) => {
       return res.status(409).json({
         ok: false,
         service: "AGV Cloudflare Exchange Start",
-        pass: "SCALE-10A",
+        pass: "SCALE-11",
         error:
           "LiveKit room does not exist yet. Start Host Camera first, then go live to Cloudflare.",
         roomId,
@@ -5127,7 +5276,7 @@ app.post("/api/broadcast/exchange/start", async (req, res) => {
       return res.status(409).json({
         ok: false,
         service: "AGV Cloudflare Exchange Start",
-        pass: "SCALE-10A",
+        pass: "SCALE-11",
         error:
           "LiveKit room is not ready. Start Host Camera, confirm viewer can see video, wait 5 seconds, then go live.",
         roomId,
@@ -5142,7 +5291,7 @@ app.post("/api/broadcast/exchange/start", async (req, res) => {
       return res.status(500).json({
         ok: false,
         service: "AGV Cloudflare Exchange Start",
-        pass: "SCALE-10A",
+        pass: "SCALE-11",
         error: "Could not build Cloudflare RTMPS stream URL.",
         roomId,
       });
@@ -5234,7 +5383,7 @@ app.post("/api/broadcast/exchange/start", async (req, res) => {
     return res.json({
       ok: true,
       service: "AGV Cloudflare Exchange Start",
-      pass: "SCALE-10A",
+      pass: "SCALE-11",
       state: next,
       source,
       playback: {
@@ -5248,8 +5397,9 @@ app.post("/api/broadcast/exchange/start", async (req, res) => {
       trackPreflight,
       egress: safeInfo,
       egressId,
+      selectedTracks,
       note:
-        "AGV Cloudflare Exchange is live. LiveKit room is being sent to Cloudflare RTMPS and viewers are routed to Cloudflare playback.",
+        "AGV Cloudflare Exchange is live. The active host video track is being sent to Cloudflare RTMPS and viewers are routed to Cloudflare playback.",
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
@@ -5273,7 +5423,7 @@ app.post("/api/broadcast/exchange/start", async (req, res) => {
     return res.status(500).json({
       ok: false,
       service: "AGV Cloudflare Exchange Start",
-      pass: "SCALE-10A",
+      pass: "SCALE-11",
       rollback: true,
       state: next,
       error: message,
@@ -5357,7 +5507,7 @@ app.post("/api/broadcast/exchange/stop", async (req, res) => {
     return res.json({
       ok: true,
       service: "AGV Cloudflare Exchange Stop",
-      pass: "SCALE-10A",
+      pass: "SCALE-11",
       state: next,
       source,
       stopped,
@@ -5371,7 +5521,7 @@ app.post("/api/broadcast/exchange/stop", async (req, res) => {
     return res.status(500).json({
       ok: false,
       service: "AGV Cloudflare Exchange Stop",
-      pass: "SCALE-10A",
+      pass: "SCALE-11",
       error: error?.message || String(error),
       timestamp: new Date().toISOString(),
     });
