@@ -2301,16 +2301,36 @@ const selectedTracks = {
 
     const playback = agvChooseCloudflarePlayback(body);
 
-    const next = agvWriteBroadcastState({
+    
+// PASS_BCAST4F_PRESERVE_CLOUDFLARE_EMBED_URL
+// SERVER FIRST — Preserve Cloudflare player URLs during LiveKit egress start.
+const agvBcast4EmbedUrl =
+  process.env.AGV_CLOUDFLARE_EMBED_URL ||
+  process.env.CLOUDFLARE_STREAM_EMBED_URL ||
+  "";
+
+const agvBcast4HlsUrl =
+  process.env.AGV_CLOUDFLARE_HLS_URL ||
+  process.env.CLOUDFLARE_STREAM_HLS_URL ||
+  "";
+
+const agvBcast4PlaybackUrl =
+  process.env.AGV_CLOUDFLARE_PLAYBACK_URL ||
+  process.env.CLOUDFLARE_STREAM_PLAYBACK_URL ||
+  agvBcast4EmbedUrl ||
+  agvBcast4HlsUrl ||
+  "";
+
+const next = agvWriteBroadcastState({
       provider: "cloudflare",
       status: "live",
       isLive: true,
       viewerMode: "broadcast",
       roomId,
       title,
-      playbackUrl: playback.playbackUrl,
-      embedUrl: playback.embedUrl,
-      hlsUrl: playback.hlsUrl,
+      playbackUrl: agvBcast4PlaybackUrl,
+      embedUrl: agvBcast4EmbedUrl || agvBcast4PlaybackUrl,
+      hlsUrl: agvBcast4HlsUrl,
       message:
         agvCleanBroadcastText(body.message, "LiveKit is sending the stage to Cloudflare broadcast.") ||
         "LiveKit is sending the stage to Cloudflare broadcast.",
