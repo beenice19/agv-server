@@ -2271,6 +2271,14 @@ const selectedScreenShare = {
   screenShareParticipant: ""
 };
 
+// PASS_BCAST4_FIX_SELECTED_TRACKS_DEFAULTS
+// Room-composite egress does not require manually selected host tracks.
+const selectedTracks = {
+  videoTrackId: "",
+  audioTrackId: "",
+  participantIdentity: ""
+};
+
     const info = await egressClient.startRoomCompositeEgress(
       roomId,
       output,
