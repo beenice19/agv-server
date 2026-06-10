@@ -2259,6 +2259,18 @@ app.post("/api/broadcast/egress/start", async (req, res) => {
     // Web egress to AGV layout caused blank Cloudflare recordings/output on this build.
     const layout = agvCleanBroadcastText(body.layout, "speaker-dark") || "speaker-dark";
 
+// PASS_BCAST4_FIX_SELECTED_LAYOUT_MODE_DEFAULTS
+// BCAST-4 uses room-composite egress. These defaults prevent undefined
+// layout/exchange fields when writing broadcast state.
+const selectedLayoutMode = "room-composite";
+const selectedLayoutName = layout;
+const selectedExchangeMode = "room-composite";
+const useScreenShareLayout = false;
+const selectedScreenShare = {
+  screenShareTrackId: "",
+  screenShareParticipant: ""
+};
+
     const info = await egressClient.startRoomCompositeEgress(
       roomId,
       output,
