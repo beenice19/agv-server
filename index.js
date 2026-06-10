@@ -16,6 +16,17 @@ app.use(express.json({ limit: "8mb" }));
 
 const server = http.createServer(app);
 
+// PASS_BCAST4E_FIX_EXCHANGE_SELECTED_TRACKS_DEFAULTS
+// SERVER FIRST — Cloudflare Exchange selectedTracks safety.
+// Some older exchange routes write selectedTracks into AGV broadcast state
+// even when using room-composite egress. These safe defaults prevent the
+// exchange path from crashing and overwriting a good BCAST-4 state.
+const selectedTracks = {
+  videoTrackId: "",
+  audioTrackId: "",
+  participantIdentity: ""
+};
+
 const io = new Server(server, {
   cors: {
     origin: "*",
