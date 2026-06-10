@@ -27,6 +27,15 @@ const selectedTracks = {
   participantIdentity: ""
 };
 
+// PASS_BCAST4G_FIX_EXCHANGE_SELECTED_SCREENSHARE_DEFAULTS
+// SERVER FIRST — Cloudflare Exchange selectedScreenShare safety.
+// The older exchange route may write screen share fields even when room-composite
+// egress is used. These safe defaults prevent the exchange path from crashing.
+const selectedScreenShare = {
+  screenShareTrackId: "",
+  screenShareParticipant: ""
+};
+
 const io = new Server(server, {
   cors: {
     origin: "*",
