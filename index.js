@@ -5706,6 +5706,64 @@ app.post("/api/broadcast/exchange/stop", async (req, res) => {
   }
 });
 
+
+/* AGV PASS PRICING-1 — REVENUE POLICY FOUNDATION */
+const AGV_REVENUE_POLICY = Object.freeze({
+  ok: true,
+  service: "AGV Revenue Policy Foundation",
+  pass: "PASS PRICING-1",
+  currency: "USD",
+  monthlySubscriptionPurpose: "Platform access",
+  subscriptionRule: "Monthly subscriptions provide access to the AGV platform, rooms, host tools, viewer tools, event controls, and plan features. Monthly subscription pricing does not include unlimited broadcast delivery.",
+  agvTicketPlatformFeePercent: 7,
+  ticketFeeRule: "Paid ticketed events include a 7% AGV ticket platform fee. This is AGV monetization revenue and is separate from broadcast delivery and payment processing.",
+  broadcastDeliveryFeeRule: "Broadcast delivery fees are billed separately based on audience size, watch time, streaming usage, Cloudflare delivery, storage, and related broadcast infrastructure costs.",
+  paymentProcessingRule: "Payment processing fees are passed through separately and are not included in the AGV 7% ticket platform fee.",
+  largeEventRule: "Large audience broadcasts, international events, conventions, high-viewer programs, and unusual streaming loads may require a custom quote before going live.",
+  planPricingPurpose: {
+    free: "Free platform access for limited testing and basic use.",
+    creator: "Creator platform access for independent creators and smaller paid events.",
+    ministryPro: "Ministry / Pro platform access for ministries, teachers, podcasters, and professional programs.",
+    convention: "Convention platform access for larger organized events. Large audience delivery may still require a custom quote."
+  },
+  feeModel: {
+    monthlySubscription: "Platform access",
+    ticketPlatformFee: "7% AGV monetization fee",
+    broadcastDeliveryFee: "Separate usage-based fee to cover Cloudflare and streaming delivery",
+    paymentProcessing: "Passed through separately",
+    largeEvents: "Custom quote"
+  },
+  customerFacingSummary: "AGV monthly plans provide platform access. Paid ticketed events include a 7% AGV platform fee. Broadcast delivery fees are billed separately based on audience size, watch time, and streaming usage. Standard payment processing fees are passed through separately. Large audience events may require a custom quote."
+});
+
+function agvRevenuePolicyResponse(extra = {}) {
+  return {
+    ...AGV_REVENUE_POLICY,
+    ...extra,
+    timestamp: new Date().toISOString()
+  };
+}
+
+app.get("/api/revenue-policy", (req, res) => {
+  res.json(agvRevenuePolicyResponse({
+    endpoint: "/api/revenue-policy"
+  }));
+});
+
+app.get("/api/pricing-policy", (req, res) => {
+  res.json(agvRevenuePolicyResponse({
+    endpoint: "/api/pricing-policy"
+  }));
+});
+
+app.get("/api/agv-fees", (req, res) => {
+  res.json(agvRevenuePolicyResponse({
+    endpoint: "/api/agv-fees"
+  }));
+});
+/* END AGV PASS PRICING-1 */
+
+
 server.listen(PORT, () => {
   const usersFileExists = fs.existsSync(USERS_FILE);
 
