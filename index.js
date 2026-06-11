@@ -2162,6 +2162,40 @@ function agvBuildBroadcastLayoutUrl(roomId, body = {}) {
   return `${base}/?agvBroadcastLayout=1&roomId=${cleanRoom}`;
 }
 
+// PASS_BCAST7A_V2_TEACHING_SCREENSHARE_LAYOUT_RESOLVER
+// SERVER FIRST — Resolve AGV teaching layouts into LiveKit room-composite layouts.
+// Goal: make screen share become the main teaching surface instead of a thumbnail.
+function agvResolveTeachingEgressLayout(body = {}) {
+  const requested =
+    agvCleanBroadcastText(body.broadcastLayout, "") ||
+    agvCleanBroadcastText(body.layout, "") ||
+    "";
+
+  const clean = String(requested || "").trim().toLowerCase();
+
+  if (
+    clean === "teaching-screen-share" ||
+    clean === "screen-share-teaching" ||
+    clean === "screenshare" ||
+    clean === "screen-share" ||
+    clean === "screen-share-dark"
+  ) {
+    return "screen-share";
+  }
+
+  if (clean === "grid" || clean === "grid-dark") {
+    return clean;
+  }
+
+  if (clean === "speaker" || clean === "speaker-dark") {
+    return clean;
+  }
+
+  // Safer AGV teaching default: speaker layout for camera-only,
+  // while screen-share requests can explicitly become screen-share.
+  return "speaker";
+}
+
 function agvSafeEgressSummary(info) {
   if (!info) return null;
 
@@ -2277,7 +2311,7 @@ app.post("/api/broadcast/egress/start", async (req, res) => {
     // PASS_BCAST4F_RESTORE_ROOM_COMPOSITE_EGRESS
     // Restore stable LiveKit Room Composite Egress.
     // Web egress to AGV layout caused blank Cloudflare recordings/output on this build.
-    const layout = agvCleanBroadcastText(body.layout, "speaker-dark") || "speaker-dark";
+    const layout = agvResolveTeachingEgressLayout(body);
 
 // PASS_BCAST4_FIX_SELECTED_LAYOUT_MODE_DEFAULTS
 // BCAST-4 uses room-composite egress. These defaults prevent undefined
