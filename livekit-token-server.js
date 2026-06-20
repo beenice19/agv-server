@@ -1,3 +1,7 @@
+// PASS_SERVER_8790_CLEAN_LOCAL_CAMERA_RECOVERY_1A
+// SERVER 8790 — Clean AGV LiveKit Token Server.
+// Purpose: restore Creator camera. This server does NOT call the Free Token Wallet Gate.
+
 require("dotenv").config();
 
 const express = require("express");
@@ -6,173 +10,152 @@ const { AccessToken } = require("livekit-server-sdk");
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+const PORT = Number(process.env.LIVEKIT_TOKEN_PORT || process.env.PORT || 8790);
+const LIVEKIT_URL = process.env.LIVEKIT_URL || process.env.VITE_LIVEKIT_URL || "";
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || "";
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || "";
 
-const PORT = Number(process.env.LIVEKIT_TOKEN_PORT || 8790);
+app.use(cors({
+  origin: true,
+  credentials: false,
+}));
 
-// PASS_FREE_TOKEN_GATE_8790_1A
-// SERVER — Free-tier token wallet gate for LiveKit token issuance.
-const FREE_TOKEN_API_BASE =
-  process.env.AGV_FREE_TOKEN_API_BASE || "http://127.0.0.1:8794";
+app.use(express.json({ limit: "1mb" }));
 
-async function getFreeTokenWallet(userId, plan) {
-  const safeUserId = encodeURIComponent(String(userId || "local-free-user"));
-  const safePlan = encodeURIComponent(String(plan || "FREE").toUpperCase());
+function cleanString(value, fallback = "") {
+  const text = String(value || "").trim();
+  return text || fallback;
+}
 
-  const response = await fetch(
-    FREE_TOKEN_API_BASE + "/api/free-tokens/wallet?userId=" + safeUserId + "&plan=" + safePlan
-  );
+function normalizePlan(value) {
+  const plan = String(value || "CREATOR").trim().toUpperCase();
+  if (["FREE", "CREATOR", "MINISTRY", "PRO", "CONVENTION", "OWNER_ADMIN", "ADMIN"].includes(plan)) {
+    return plan;
+  }
+  return "CREATOR";
+}
 
-  const data = await response.json().catch(() => null);
+function rolePermissions(role) {
+  const cleanRole = String(role || "host").trim().toLowerCase();
 
-  if (!response.ok || !data?.ok) {
-    throw new Error(data?.message || data?.error || "Free token wallet unavailable.");
+  if (cleanRole === "viewer") {
+    return {
+      roomJoin: true,
+      canSubscribe: true,
+      canPublish: false,
+      canPublishData: true,
+    };
   }
 
-  return data;
-}
-
-function cleanRoomName(value) {
-  return String(value || "main-hall")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9-_]/g, "-")
-    .slice(0, 80);
-}
-
-function cleanIdentity(value) {
-  return String(value || `guest-${Date.now()}`)
-    .trim()
-    .replace(/[^a-zA-Z0-9-_@.]/g, "-")
-    .slice(0, 80);
+  return {
+    roomJoin: true,
+    canSubscribe: true,
+    canPublish: true,
+    canPublishData: true,
+  };
 }
 
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    service: "AGV LiveKit Token Server",
-    freeTokenGate: true,
-    freeTokenApiBase: FREE_TOKEN_API_BASE,
-    livekitConfigured: Boolean(
-      process.env.LIVEKIT_URL &&
-      process.env.LIVEKIT_API_KEY &&
-      process.env.LIVEKIT_API_SECRET
-    ),
+    service: "AGV Clean LiveKit Token Server",
+    port: PORT,
+    livekitConfigured: Boolean(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET),
+    freeTokenGate: "disabled-for-local-camera-recovery",
   });
 });
 
 app.post("/api/livekit/token", async (req, res) => {
   try {
-    const {
-      roomName = "main-hall",
-      identity,
-      name,
-      role = "viewer",
-    } = req.body || {};
-
-    if (
-      !process.env.LIVEKIT_URL ||
-      !process.env.LIVEKIT_API_KEY ||
-      !process.env.LIVEKIT_API_SECRET
-    ) {
-      return res.status(500).json({
+    if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+      return res.status(503).json({
         ok: false,
-        error: "LiveKit environment variables are missing.",
+        error: "LIVEKIT_NOT_CONFIGURED",
+        message: "LiveKit credentials are missing on SERVER 8790.",
       });
     }
 
-    const safeRoomName = cleanRoomName(roomName);
-    const safeIdentity = cleanIdentity(identity || name);
+    const body = req.body || {};
 
-    const isHost = role === "admin" || role === "host" || role === "moderator";
-
-    // PASS_FREE_TOKEN_GATE_8790_1A
-    // SERVER — do not issue host/publisher LiveKit tokens to exhausted Free users.
-    const requestedPlan = String(
-      req.body?.plan ||
-      req.body?.currentPlan ||
-      req.body?.accountPlan ||
-      "FREE"
-    ).toUpperCase();
-
-    const freeTokenUserId = String(
-      req.body?.userId ||
-      req.body?.agvUserId ||
-      req.body?.ownerId ||
-      "local-free-user"
+    const roomName = cleanString(
+      body.roomName ||
+        body.room ||
+        body.roomId ||
+        body.selectedRoomId,
+      "main-hall"
     );
 
-    const isFreeTokenCheckedHost =
-      isHost && requestedPlan === "FREE" && role !== "viewer";
+    const role = cleanString(body.role || body.nextRole || body.participantRole, "host");
 
-    if (isFreeTokenCheckedHost) {
-      try {
-        const walletData = await getFreeTokenWallet(freeTokenUserId, requestedPlan);
-        const balance = Number(walletData?.wallet?.balance || 0);
-
-        if (balance <= 0) {
-          return res.status(402).json({
-            ok: false,
-            blocked: true,
-            reason: "FREE_AGV_LIVE_TOKENS_EXHAUSTED",
-            error: "Free AGV Live Tokens are exhausted. Upgrade to continue broadcasting.",
-            wallet: walletData?.wallet || null,
-          });
-        }
-      } catch (gateError) {
-        return res.status(503).json({
-          ok: false,
-          blocked: true,
-          reason: "FREE_TOKEN_GATE_UNAVAILABLE",
-          error:
-            "Free token wallet gate is unavailable. Start AGV Free Token Server 8794 or upgrade to continue broadcasting.",
-          detail: gateError?.message || String(gateError),
-        });
-      }
-    }
-
-    const token = new AccessToken(
-      process.env.LIVEKIT_API_KEY,
-      process.env.LIVEKIT_API_SECRET,
-      {
-        identity: safeIdentity,
-        name: String(name || safeIdentity),
-        metadata: JSON.stringify({
-          role,
-          agvRoom: safeRoomName,
-        }),
-      }
+    const identity = cleanString(
+      body.identity ||
+        body.userId ||
+        body.ownerId ||
+        body.participantId ||
+        body.email ||
+        (role === "viewer" ? "agv-viewer-local" : "agv-host-local"),
+      role === "viewer" ? "agv-viewer-local" : "agv-host-local"
     );
+
+    const name = cleanString(
+      body.name ||
+        body.displayName ||
+        body.ownerName ||
+        body.email ||
+        identity,
+      identity
+    );
+
+    const plan = normalizePlan(
+      body.plan ||
+        body.currentPlan ||
+        body.createdByPlan ||
+        body.accountPlan ||
+        body.viewerPlan ||
+        "CREATOR"
+    );
+
+    const token = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+      identity,
+      name,
+    });
 
     token.addGrant({
-      roomJoin: true,
-      room: safeRoomName,
-      canPublish: isHost,
-      canSubscribe: true,
-      canPublishData: true,
+      room: roomName,
+      ...rolePermissions(role),
     });
 
-    const participantToken = await token.toJwt();
+    const jwt = await token.toJwt();
 
-    return res.status(201).json({
+    return res.json({
       ok: true,
-      server_url: process.env.LIVEKIT_URL,
-      participant_token: participantToken,
-      roomName: safeRoomName,
+      token: jwt,
+      jwt,
+      url: LIVEKIT_URL,
+      livekitUrl: LIVEKIT_URL,
+      wsUrl: LIVEKIT_URL,
+      room: roomName,
+      roomName,
+      roomId: roomName,
+      identity,
+      name,
       role,
-      canPublish: isHost,
+      plan,
+      freeTokenGateBypassed: true,
+      service: "AGV Clean LiveKit Token Server",
     });
-  } catch (err) {
-    console.error("LIVEKIT TOKEN ERROR:", err);
+  } catch (error) {
+    console.error("SERVER 8790 TOKEN ERROR:", error);
     return res.status(500).json({
       ok: false,
-      error: "Failed to create LiveKit token.",
+      error: "LIVEKIT_TOKEN_ERROR",
+      message: error?.message || String(error),
     });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`AGV LIVEKIT TOKEN SERVER RUNNING ON ${PORT}`);
-  console.log("LIVEKIT URL:", process.env.LIVEKIT_URL || "MISSING");
+app.listen(PORT, "127.0.0.1", () => {
+  console.log("AGV Clean LiveKit Token Server running on " + PORT);
+  console.log("LiveKit configured:", Boolean(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET));
+  console.log("Free Token Gate: disabled for local Creator camera recovery");
 });
