@@ -15,6 +15,14 @@ const LIVEKIT_URL = process.env.LIVEKIT_URL || process.env.VITE_LIVEKIT_URL || "
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || "";
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || "";
 
+// PASS_SERVER_8790_USAGE_WALLET_BROADCAST_GATE_1A
+// SERVER 8790 — before issuing a publisher LiveKit token, check/debit the AGV usage wallet.
+const USAGE_WALLET_API_BASE =
+  process.env.AGV_USAGE_WALLET_API_URL ||
+  process.env.VITE_AGV_FREE_TOKEN_API_URL ||
+  process.env.FREE_TOKEN_API_BASE ||
+  "http://127.0.0.1:8794";
+
 app.use(cors({
   origin: true,
   credentials: false,
@@ -61,9 +69,80 @@ app.get("/health", (req, res) => {
     service: "AGV Clean LiveKit Token Server",
     port: PORT,
     livekitConfigured: Boolean(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET),
-    freeTokenGate: "disabled-for-local-camera-recovery",
+    freeTokenGate: "enabled-server-side-wallet-gate",
+    usageWalletApiBase: USAGE_WALLET_API_BASE,
   });
 });
+
+
+async function requireUsageWalletBeforeLiveToken({ identity, plan, role, roomName }) {
+  const cleanPlan = normalizePlan(plan);
+  const cleanRole = String(role || "host").trim().toLowerCase();
+
+  // Viewers do not publish camera/screen, so they do not burn host live tokens.
+  if (cleanRole === "viewer") {
+    return { ok: true, skipped: true, reason: "viewer-token" };
+  }
+
+  // Admin bypass stays available for platform recovery.
+  if (cleanPlan === "OWNER_ADMIN" || cleanPlan === "ADMIN") {
+    return { ok: true, skipped: true, reason: "admin-bypass" };
+  }
+
+  const body = {
+    userId: identity || "agv-host-local",
+    plan: cleanPlan,
+    roomId: roomName || "main-hall",
+    sessionId: "server-token-gate-" + Date.now(),
+    seconds: 60,
+    viewerCount: 0,
+    screenShare: false,
+  };
+
+  let response;
+  let data;
+
+  try {
+    response = await fetch(USAGE_WALLET_API_BASE + "/api/usage/live-debit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    data = await response.json().catch(() => null);
+  } catch (error) {
+    return {
+      ok: false,
+      status: 503,
+      error: "USAGE_WALLET_UNREACHABLE",
+      message:
+        "AGV usage wallet server is unavailable. Broadcast token was not issued.",
+      details: error?.message || String(error),
+    };
+  }
+
+  if (!response.ok || !data?.ok) {
+    return {
+      ok: false,
+      status: response.status || 402,
+      error: data?.error || "USAGE_WALLET_BLOCKED",
+      message:
+        data?.message ||
+        "AGV usage wallet did not approve this broadcast token.",
+      wallet: data?.wallet || null,
+      data,
+    };
+  }
+
+  return {
+    ok: true,
+    status: response.status,
+    debited: Boolean(data.debited),
+    tokensDebited: Number(data.tokensDebited || 0),
+    remainingTokens: Number(data.remainingTokens ?? data.wallet?.liveTokensBalance ?? data.wallet?.balance ?? 0),
+    wallet: data.wallet || null,
+  };
+}
 
 app.post("/api/livekit/token", async (req, res) => {
   try {
@@ -115,6 +194,23 @@ app.post("/api/livekit/token", async (req, res) => {
         "CREATOR"
     );
 
+    const walletGate = await requireUsageWalletBeforeLiveToken({
+      identity,
+      plan,
+      role,
+      roomName,
+    });
+
+    if (!walletGate.ok) {
+      return res.status(walletGate.status || 402).json({
+        ok: false,
+        error: walletGate.error || "BROADCAST_WALLET_GATE_BLOCKED",
+        message: walletGate.message || "AGV usage wallet blocked this broadcast token.",
+        walletGate,
+        service: "AGV Clean LiveKit Token Server",
+      });
+    }
+
     const token = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
       identity,
       name,
@@ -141,7 +237,8 @@ app.post("/api/livekit/token", async (req, res) => {
       name,
       role,
       plan,
-      freeTokenGateBypassed: true,
+      walletGate,
+      freeTokenGateBypassed: false,
       service: "AGV Clean LiveKit Token Server",
     });
   } catch (error) {
