@@ -251,7 +251,7 @@ app.post("/api/livekit/token", async (req, res) => {
   }
 });
 
-app.listen(PORT, "127.0.0.1", () => {
+app.listen(PORT, process.env.HOST || "0.0.0.0", () => {
   console.log("AGV Clean LiveKit Token Server running on " + PORT);
   console.log("LiveKit configured:", Boolean(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET));
   console.log("Free Token Gate: disabled for local Creator camera recovery");
